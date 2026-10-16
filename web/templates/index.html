@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patch Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .card {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        th {
+            background-color: #007bff;
+            color: white;
+        }
+        tr:hover {
+            background-color: #e9ecef;
+        }
+        .status-success {
+            color: green;
+            font-weight: bold;
+        }
+        .status-failed {
+            color: red;
+            font-weight: bold;
+        }
+        .status-pending {
+            color: orange;
+            font-weight: bold;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .btn-success {
+            background-color: #28a745;
+        }
+        .btn-success:hover {
+            background-color: #1e7e34;
+        }
+        .btn-danger {
+            background-color: #dc3545;
+        }
+        .btn-danger:hover {
+            background-color: #c82333;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #e9ecef;
+            border-right: 1px solid #dee2e6;
+        }
+        .tab.active {
+            background-color: #007bff;
+            color: white;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Container Patch Management</h1>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('dashboard')">Dashboard</div>
+            <div class="tab" onclick="switchTab('containers')">Containers</div>
+            <div class="tab" onclick="switchTab('scheduling')">Scheduling</div>
+            <div class="tab" onclick="switchTab('history')">Update History</div>
+        </div>
+
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <h2>Dashboard</h2>
+
+            <div class="card">
+                <h3>System Status</h3>
+                <p><strong>Total Containers:</strong> {{ container_count }}</p>
+                <p><strong>Containers with Updates:</strong> {{ containers_with_updates }}</p>
+                <p><strong>Successfully Updated (Last 24h):</strong> {{ successful_updates }}</p>
+            </div>
+
+            <div class="card">
+                <h3>Recent Updates</h3>
+                {% if recent_updates %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Container</th>
+                                <th>Status</th>
+                                <th>Start Time</th>
+                                <th>Packages Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for update in recent_updates %}
+                            <tr>
+                                <td>{{ update.container_name }}</td>
+                                <td class="status-{{ update.status }}">{{ update.status.title() }}</td>
+                                <td>{{ update.start_time }}</td>
+                                <td>{{ update.packages_updated or 'N/A' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No recent updates found.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Containers Tab -->
+        <div id="containers" class="tab-content">
+            <h2>Containers</h2>
+
+            <div class="card">
+                <h3>Add New Container</h3>
+                <form id="addContainerForm">
+                    <div class="form-group">
+                        <label for="name">Container Name:</label>
+                        <input type="text" id="name" name="name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="container_id">Container ID:</label>
+                        <input type="text" id="container_id" name="container_id" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="ssh_host">SSH Host:</label>
+                        <input type="text" id="ssh_host" name="ssh_host">
+                    </div>
+                    <div class="form-group">
+                        <label for="ssh_port">SSH Port:</label>
+                        <input type="number" id="ssh_port" name="ssh_port" value="22">
+                    </div>
+                    <div class="form-group">
+                        <label for="ssh_user">SSH User:</label>
+                        <input type="text" id="ssh_user" name="ssh_user" value="root">
+                    </div>
+                    <button type="submit">Add Container</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Managed Containers</h3>
+                {% if containers %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Container ID</th>
+                                <th>Status</th>
+                                <th>SSH Host</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for container in containers %}
+                            <tr>
+                                <td>{{ container.name }}</td>
+                                <td>{{ container.container_id }}</td>
+                                <td class="status-{{ container.status }}">{{ container.status.title() }}</td>
+                                <td>{{ container.ssh_host or 'N/A' }}</td>
+                                <td>
+                                    <button onclick="patchContainer({{ container.id }})">Patch</button>
+                                    <button class="btn-danger" onclick="removeContainer({{ container.id }})">Remove</button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No containers configured.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Scheduling Tab -->
+        <div id="scheduling" class="tab-content">
+            <h2>Scheduling</h2>
+
+            <div class="card">
+                <h3>Configure Update Schedule</h3>
+                <p>Set automatic update schedules for containers.</p>
+                <form id="scheduleForm">
+                    <div class="form-group">
+                        <label for="schedule_container">Container:</label>
+                        <select id="schedule_container" name="container_id" required>
+                            {% for container in containers %}
+                            <option value="{{ container.id }}">{{ container.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="schedule_type">Schedule Type:</label>
+                        <select id="schedule_type" name="schedule_type" required>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="time_of_day">Time of Day:</label>
+                        <input type="time" id="time_of_day" name="time_of_day" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="day_of_week">Day of Week (for weekly):</label>
+                        <select id="day_of_week" name="day_of_week">
+                            <option value="0">Sunday</option>
+                            <option value="1">Monday</option>
+                            <option value="2">Tuesday</option>
+                            <option value="3">Wednesday</option>
+                            <option value="4">Thursday</option>
+                            <option value="5">Friday</option>
+                            <option value="6">Saturday</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="maintenance_start">Maintenance Window Start:</label>
+                        <input type="time" id="maintenance_start" name="maintenance_window_start">
+                    </div>
+                    <div class="form-group">
+                        <label for="maintenance_end">Maintenance Window End:</label>
+                        <input type="time" id="maintenance_end" name="maintenance_window_end">
+                    </div>
+                    <button type="submit">Save Schedule</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Active Schedules</h3>
+                {% if schedules %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Container</th>
+                                <th>Schedule Type</th>
+                                <th>Time</th>
+                                <th>Maintenance Window</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for schedule in schedules %}
+                            <tr>
+                                <td>{{ schedule.container_name }}</td>
+                                <td>{{ schedule.schedule_type.title() }}</td>
+                                <td>{{ schedule.time_of_day }}</td>
+                                <td>{{ schedule.maintenance_window_start or 'N/A' }} - {{ schedule.maintenance_window_end or 'N/A' }}</td>
+                                <td>{{ 'Enabled' if schedule.enabled else 'Disabled' }}</td>
+                                <td>
+                                    <button onclick="toggleSchedule({{ schedule.id }})">Toggle</button>
+                                    <button class="btn-danger" onclick="deleteSchedule({{ schedule.id }})">Delete</button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No schedules configured.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div id="history" class="tab-content">
+            <h2>Update History</h2>
+
+            <div class="card">
+                <h3>Container Update History</h3>
+                <select id="historyContainerSelect" onchange="loadHistory()">
+                    <option value="">Select a container</option>
+                    {% for container in containers %}
+                    <option value="{{ container.id }}">{{ container.name }}</option>
+                    {% endfor %}
+                </select>
+
+                <div id="historyContent">
+                    <!-- History will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tabName) {
+            // Hide all tab content
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => content.classList.remove('active'));
+
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+
+            // Show selected tab content and mark tab as active
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function patchContainer(containerId) {
+            if (confirm('Are you sure you want to patch this container?')) {
+                fetch(`/patch/${containerId}`, { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(`Patch result: ${data.success ? 'Success' : 'Failed'} - ${data.message || ''}`);
+                        location.reload();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('Error occurred while patching container');
+                    });
+            }
+        }
+
+        function removeContainer(containerId) {
+            if (confirm('Are you sure you want to remove this container?')) {
+                fetch(`/container/${containerId}`, { method: 'DELETE' })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert('Container removed successfully');
+                        location.reload();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('Error occurred while removing container');
+                    });
+            }
+        }
+
+        function loadHistory() {
+            const containerId = document.getElementById('historyContainerSelect').value;
+            if (containerId) {
+                fetch(`/history/${containerId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        let html = '<table><thead><tr><th>Date</th><th>Status</th><th>Packages</th><th>Output</th></tr></thead><tbody>';
+                        data.forEach(update => {
+                            html += `<tr>
+                                <td>${update.start_time}</td>
+                                <td class="status-${update.status}">${update.status}</td>
+                                <td>${update.packages_updated || 'N/A'}</td>
+                                <td><button onclick="showOutput('${update.id}')">View</button></td>
+                            </tr>`;
+                        });
+                        html += '</tbody></table>';
+                        document.getElementById('historyContent').innerHTML = html;
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        document.getElementById('historyContent').innerHTML = '<p>Error loading history</p>';
+                    });
+            } else {
+                document.getElementById('historyContent').innerHTML = '';
+            }
+        }
+
+        function showOutput(updateId) {
+            // Placeholder for showing output details
+            alert('Output viewing not implemented in this version');
+        }
+
+        function toggleSchedule(scheduleId) {
+            fetch(`/schedule/${scheduleId}/toggle`, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    alert('Schedule toggled successfully');
+                    location.reload();
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error occurred while toggling schedule');
+                });
+        }
+
+        function deleteSchedule(scheduleId) {
+            if (confirm('Are you sure you want to delete this schedule?')) {
+                fetch(`/schedule/${scheduleId}`, { method: 'DELETE' })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert('Schedule deleted successfully');
+                        location.reload();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('Error occurred while deleting schedule');
+                    });
+            }
+        }
+
+        // Form submissions
+        document.getElementById('addContainerForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {};
+            for (let [key, value] of formData.entries()) {
+                data[key] = value;
+            }
+
+            fetch('/container', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert('Container added successfully');
+                location.reload();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error occurred while adding container');
+            });
+        });
+
+        document.getElementById('scheduleForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {};
+            for (let [key, value] of formData.entries()) {
+                data[key] = value;
+            }
+
+            fetch('/schedule', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert('Schedule saved successfully');
+                location.reload();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error occurred while saving schedule');
+            });
+        });
+    </script>
+</body>
+</html>

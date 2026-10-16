@@ -1,0 +1,5 @@
+Flask==2.3.3
+paramiko==3.4.0
+sqlalchemy==2.0.21
+python-crontab==2.7.1
+requests==2.31.0
