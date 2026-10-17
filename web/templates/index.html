@@ -388,11 +388,11 @@
                     <thead>
                         <tr id="discoveryTableHeader">
                             <th style="width:30px;"><input type="checkbox" id="selectAllChk" onclick="event.stopPropagation();toggleSelectAll(this)"></th>
-                            <th class="sortable" data-col="0" onclick="sortTable(0)">ID <span class="sort-arrow">↕</span></th>
-                            <th class="sortable" data-col="1" onclick="sortTable(1)">Name <span class="sort-arrow">↕</span></th>
-                            <th class="sortable" data-col="2" onclick="sortTable(2)">Status <span class="sort-arrow">↕</span></th>
-                            <th class="sortable" data-col="3" onclick="sortTable(3)">Node <span class="sort-arrow">↕</span></th>
-                            <th class="sortable" data-col="4" onclick="sortTable(4)">IPs <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="1" onclick="sortTable(1)">ID <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="2" onclick="sortTable(2)">Name <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="3" onclick="sortTable(3)">Status <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="4" onclick="sortTable(4)">Node <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="5" onclick="sortTable(5)">IPs <span class="sort-arrow">↕</span></th>
                         </tr>
                     </thead>
                     <tbody id="discoveryTableBody">
@@ -632,7 +632,7 @@
                 th.querySelector('.sort-arrow').textContent = '↕';
             });
 
-            const active = ths[colIndex];
+            const active = ths[colIndex - 1];
             active.classList.add('active-sort');
             active.querySelector('.sort-arrow').textContent = _sortAsc ? '↑' : '↓';
 
@@ -643,7 +643,7 @@
             rows.sort((a, b) => {
                 let av = a.cells[colIndex].textContent.trim().toLowerCase();
                 let bv = b.cells[colIndex].textContent.trim().toLowerCase();
-                if (colIndex === 0) {
+                if (colIndex === 1) {
                     const an = parseFloat(av);
                     const bn = parseFloat(bv);
                     if (!isNaN(an) && !isNaN(bn)) {
