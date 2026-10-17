@@ -1,20 +1,27 @@
 """
 Proxmox VE API integration for LXC container discovery and management.
+
+Uses direct HTTP requests to Proxmox's REST API.
+API tokens are sent via the PVEAPIToken authorization header (the raw
+token secret is not HMAC-signatured — it's a shared-secret).
+Password auth uses ticket-based login.
 """
+
 import logging
-from proxmoxer import ProxmoxAPI
+import urllib.parse
+
+import requests
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _parse_net_config(net_string):
-    """Parse a Proxmox network config string into a dict of key=value pairs.
-
-    Example input:
-        'name=eth0,ip=192.168.1.100/24,gw=192.168.1.1,bridge=vmbr0,hwaddr=AABBCCDDEEFF'
-
-    Returns dict of parsed key-value pairs.
-    """
+    """Parse a Proxmox network config string into a dict of key=value pairs."""
     config = {}
     if not net_string:
         return config
@@ -27,7 +34,6 @@ def _parse_net_config(net_string):
         key = net_string[i:eq_pos].strip()
         start = eq_pos + 1
         if start < len(net_string) and net_string[start] == '[':
-            # Handle nested brackets (e.g. ip=[10.0.0.1/24])
             depth = 1
             end = start + 1
             while end < len(net_string) and depth > 0:
@@ -50,8 +56,132 @@ def _parse_net_config(net_string):
 
 
 def _extract_ip_from_cidr(cidr):
-    """Strip CIDR suffix from an IP address string (e.g. '10.0.0.5/24' -> '10.0.0.5')."""
+    """Strip CIDR suffix from an IP address string."""
     return cidr.split('/')[0] if cidr else None
+
+
+# ---------------------------------------------------------------------------
+# Proxmox auth helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_token_user(user_string):
+    """Parse 'user@realm!keyname' into (full_with_key, key_name) or (user, None).
+
+    Also strips bash-escaped \\! sequences (from histexpand in double quotes).
+    """
+    cleaned = user_string.replace('\\!', '!').replace('\\\\', '\\')
+    if '!' in cleaned:
+        parts = cleaned.rsplit('!', 1)
+        return f'{parts[0]}!{parts[1]}', parts[1]
+    return cleaned, None
+
+
+def _build_api_token_header(service, username, token_name, token_value):
+    """Build the PVEAPIToken Authorization header value.
+
+    Format: {service}APIToken={username}!{token_name}={token_value}
+    where service='PVE', username has no ! (just user@realm),
+    and token_name is the key name.
+
+    If username already contains !keyname, token_name must be empty.
+    """
+    # Clean any bash artifacts
+    clean_username = username.replace('\\!', '!').replace('\\\\', '\\')
+    clean_token_value = (token_value or '').replace('\\!', '!').replace('\\\\', '\\')
+
+    if token_name and '!' not in clean_username:
+        return f'{service}APIToken={clean_username}!{token_name}={clean_token_value}'
+    elif token_name:
+        # ! already in username — ignore extra key_name to avoid double !keyname
+        return f'{service}APIToken={clean_username}={clean_token_value}'
+    else:
+        return f'{service}APIToken={clean_username}={clean_token_value}'
+
+
+def _get_csrf_cookie(base_url, verify_ssl):
+    """Fetch CSRF pre-call cookie from Proxmox /access/token endpoint.
+
+    Returns (csrf_token_string, dict_of_cookies) or raises on failure.
+    """
+    r = requests.get(
+        f'{base_url.rstrip("/")}/api2/json/access/token',
+        verify=verify_ssl, timeout=10,
+    )
+    r.raise_for_status()
+    csrf = r.headers.get('PVECSRFToken', '')
+    cookies = r.cookies.get_dict()
+    return csrf, cookies
+
+
+def _api_request(method, base_url, user, key_name, token_value, verify_ssl,
+                 path, params=None, data=None):
+    """Send a Proxmox API request.
+
+    For API tokens: PVEAPIToken header with raw secret.
+    For password: ticket-based cookie login via /access/ticket first.
+    """
+    service = 'PVE'
+    url = f'{base_url.rstrip("/")}/api2/json{path}'
+    headers = {'Accept': 'application/json'}
+    cookies = None
+
+    if token_value:
+        # --- API token path (raw secret, no HMAC) ---
+        auth_str = _build_api_token_header(service, user, key_name, token_value)
+        headers['Authorization'] = auth_str
+
+    elif data and isinstance(data, str):
+        # --- Password path: ticket-based login via /access/ticket ---
+        # In Proxmox 8+/9.x, /access/token returns 401 without auth.
+        # We post directly to /access/ticket and use the ticket as a cookie.
+        login_resp = requests.post(
+            f'{base_url.rstrip("/")}/api2/json/access/ticket',
+            data={'username': user, 'password': data},
+            verify=verify_ssl, timeout=10,
+        )
+        login_resp.raise_for_status()
+        ticket_data = login_resp.json()['data']
+        pve_ticket = ticket_data.get('ticket') or ''
+        if not pve_ticket:
+            raise PermissionError("No ticket returned from /access/ticket")
+
+        # Use PVEAuthCookie as a cookie for subsequent requests
+        cookies = {'PVEAuthCookie': pve_ticket}
+
+    if cookies:
+        pass  # cookie-based auth for ticket login
+    elif headers.get('Authorization'):
+        logger.debug(f"Auth: {headers['Authorization'][:30]}...")
+
+    # Execute the request
+    r = requests.request(
+        method, url, params=params, data=None,
+        headers=headers, cookies=cookies,
+        verify=verify_ssl, timeout=15,
+    )
+
+    if r.status_code == 401:
+        raise PermissionError(f"Authentication failed for {path}")
+    elif r.status_code >= 400 and r.status_code < 500:
+        raw_resp = r.text
+        try:
+            err_data = r.json()
+            # 'data' may exist but be None; check multiple keys for error detail
+            detail = err_data.get('errors') or str(err_data)
+        except Exception:
+            detail = raw_resp
+
+        print(f"[HTTP DEBUG] {method} {url} -> {r.status_code}: {detail!r}")
+        raise RuntimeError(f"API error {r.status_code} for {path}: {detail}")
+
+    r.raise_for_status()
+    return r.json().get('data', {})
+
+
+# ---------------------------------------------------------------------------
+# Public discovery & import functions
+# ---------------------------------------------------------------------------
 
 
 def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_password=None,
@@ -59,103 +189,151 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
                                 token_name=None, token_value=None):
     """Discover all LXC containers from a Proxmox cluster.
 
+    Supports:
+      1. API token: --user 'patch@pam!patchtuesday' + --token-value SECRET
+      2. Password:  --password PASSWORD
+
     Args:
         proxmox_host: Cluster hostname or IP address.
-        proxmox_user: Username (optional). May use API token format 'user@realm!keyname'.
-        proxmox_password: Password for password-based auth (fallback if no token).
+        proxmox_user: Username, may include !keyname e.g. 'root@pam!patchtuesday'
+        proxmox_password: Password for password-based auth.
         proxmox_port: API port, default 8006.
-        verify_ssl: Whether to verify SSL certificates.
-        token_name: API token key name (e.g. 'my-token').
-        token_value: API token value (the secret part).
+        verify_ssl: Verify SSL certificates.
+        token_name: API token key name (e.g. 'patchtuesday'). May be redundant
+                     if already included in proxmox_user via !keyname.
+        token_value: API token secret value (the long random string).
 
     Returns:
-        List of dicts with keys:
-            name, container_id, status, node, primary_ip, all_ips,
-            mac_addresses, bridges.
+        List of dicts with name, container_id, status, node, primary_ip, etc.
     """
+    if not proxmox_host:
+        raise ValueError("proxmox_host is required")
     if not proxmox_user:
-        raise ValueError("proxmox_user is required")
+        raise ValueError("proxmox_user is required (e.g. root@pam or root@pam!patchtuesday)")
 
-    # Determine auth method
-    kwargs = {
-        'base_url': f'https://{proxmox_host}:{proxmox_port}',
-        'verify_ssl': verify_ssl,
-    }
+    has_token = bool(token_value)
+    has_password = bool(proxmox_password)
 
-    if token_name and token_value:
-        kwargs['user'] = proxmox_user
-        kwargs['token_name'] = token_name
-        kwargs['token_value'] = token_value
-    elif proxmox_password:
-        kwargs['user'] = proxmox_user
-        kwargs['password'] = proxmox_password
-    else:
-        raise ValueError("Either (token_name + token_value) or password is required")
+    if not has_token and not has_password:
+        raise ValueError(
+            "Authentication required. Provide either:\n"
+            "  --token-value SECRET (API token)\n"
+            "or\n"
+            "  --password PASSWORD (password auth)"
+        )
 
-    logger.info(f"Connecting to Proxmox at {proxmox_host}:{proxmox_port} as {proxmox_user}")
+    base_url = f'https://{proxmox_host}:{proxmox_port}'
+
+    # Parse key name from user string if present, otherwise use explicit arg
+    full_user_with_key, key_name_from_user = _parse_token_user(proxmox_user)
+    effective_key_name = token_name or key_name_from_user
+
+    print(f"[DEBUG] Connecting to {base_url} as {full_user_with_key}")
+    auth_type = 'API token' if has_token else 'password'
+    if has_token:
+        print(f"[DEBUG] Token key name: {effective_key_name!r}")
+        print(f"[DEBUG] Token value length: {len(token_value)}")
+        # Print first 8 chars + last 4 of token for verification
+        tv_display = f'{token_value[:8]}...{token_value[-4:]}' if len(token_value) > 12 else '(short)'
+        print(f"[DEBUG] Token value preview: {tv_display}")
+    print(f"[DEBUG] Auth method: {auth_type}, verify_ssl={verify_ssl}")
 
     try:
-        proxmox = ProxmoxAPI(**kwargs)
-        # Quick test that auth works
-        proxmox.nodes.get()
+        # Test connection by fetching nodes list
+        nodes_data = _api_request(
+            'GET', base_url, full_user_with_key, effective_key_name,
+            token_value if has_token else None, verify_ssl, '/nodes',
+            data=proxmox_password
+        )
+        node_list = nodes_data if isinstance(nodes_data, list) else []
+        print(f"[DEBUG] Auth OK, found {len(node_list)} node(s)")
+    except PermissionError as e:
+        print(f"[ERROR] Authentication failed — check your credentials:")
+        print(f"         User (with key): {full_user_with_key}")
+        if has_token:
+            print(f"         Token key name: {effective_key_name!r}")
+            print(f"         Has token value: True ({len(token_value)} chars)")
+            # Show the full auth header that will be sent
+            auth_str = _build_api_token_header('PVE', full_user_with_key, effective_key_name, token_value)
+            print(f"         Auth header preview: {auth_str[:80]}...")
+        else:
+            print(f"         Has password: True")
+        print(f"         Error: {e}")
+        return []
     except Exception as e:
-        logger.error(f"Failed to connect to Proxmox: {e}")
+        print(f"[ERROR] Connection failed to {proxmox_host}:{proxmox_port}:")
+        print(f"         {type(e).__name__}: {e}")
         return []
 
     discovered = []
 
-    for node_info in proxmox.nodes.get():
-        node_name = node_info['node']
+    for node_info in nodes_data:
+        node_name = node_info.get('node', 'unknown')
+        print(f"[DISCOVER] Checking node: {node_name}")
 
-        # Get runtime status list for this node
+        # Get LXC container list/status for this node
         try:
-            status_list = proxmox.nodes(node_name).lxc.get()
-            status_map = {s['vmid']: s.get('status', 'unknown') for s in status_list}
+            lxc_status = _api_request(
+                'GET', base_url, full_user_with_key, effective_key_name,
+                token_value if has_token else None, verify_ssl,
+                f'/nodes/{node_name}/lxc',
+                data=proxmox_password
+            )
+            status_list = lxc_status if isinstance(lxc_status, list) else []
         except Exception as e:
-            logger.warning(f"Could not get runtime status from node {node_name}: {e}")
-            status_map = {}
-
-        # Get config list (net, IP, etc.)
-        try:
-            containers = proxmox.nodes(node_name).lxc.config.get()
-        except Exception as e:
-            logger.warning(f"Could not get config from node {node_name}: {e}")
+            print(f"[DISCOVER] ERROR getting LXC list from {node_name}: {e}")
             continue
 
-        for container in containers:
-            vmid = container.get('vmid')
-            name = container.get('name', f'unknown-{vmid}')
+        print(f"[DISCOVER]   Found {len(status_list)} entries on {node_name}")
 
-            # Skip templates
-            if container.get('template', 0) == 1:
+        for status_entry in status_list:
+            vmid = status_entry.get('vmid')
+            name = status_entry.get('name', f'unknown-{vmid}')
+            status = status_entry.get('status', 'unknown')
+            ctype = status_entry.get('type', 'unknown')
+            is_template = status_entry.get('template', 0) == 1
+
+            print(f"[DISCOVER]   -> {name} (vmid={vmid}, type={ctype}, status={status}, template={is_template})")
+
+            if is_template:
+                continue
+            if ctype != 'lxc':
                 continue
 
-            status = status_map.get(vmid, 'unknown')
-
-            # Parse network interfaces (net0, net1, ...)
             all_ips = []
             mac_addresses = []
             bridges = []
+            try:
+                config_data = _api_request(
+                    'GET', base_url, full_user_with_key, effective_key_name,
+                    token_value if has_token else None, verify_ssl,
+                    f'/nodes/{node_name}/lxc/{vmid}/config',
+                    data=proxmox_password
+                )
+                config_entries = config_data if isinstance(config_data, dict) else {}
 
-            idx = 0
-            while True:
-                key = f'net{idx}'
-                net_val = container.get(key)
-                if not net_val:
-                    break
+                nets = {}
+                for key, val in config_entries.items():
+                    if key.startswith('net'):
+                        parsed = _parse_net_config(val)
+                        nets[key] = parsed
 
-                net_config = _parse_net_config(net_val)
-                ip_raw = net_config.get('ip', '')
-                if ip_raw:
-                    all_ips.append(_extract_ip_from_cidr(ip_raw))
-                mac = net_config.get('hwaddr')
-                if mac:
-                    mac_addresses.append(mac)
-                bridge = net_config.get('bridge')
-                if bridge and bridge not in bridges:
-                    bridges.append(bridge)
-
-                idx += 1
+                for idx in range(20):
+                    key = f'net{idx}'
+                    if key not in nets:
+                        break
+                    net_parsed = nets[key]
+                    ip_raw = net_parsed.get('ip', '')
+                    if ip_raw:
+                        all_ips.append(_extract_ip_from_cidr(ip_raw))
+                    mac = net_parsed.get('hwaddr')
+                    if mac:
+                        mac_addresses.append(mac)
+                    bridge = net_parsed.get('bridge')
+                    if bridge and bridge not in bridges:
+                        bridges.append(bridge)
+            except Exception as e:
+                print(f"[DISCOVER]   ERROR getting config for {name}: {e}")
 
             discovered.append({
                 'name': name,
@@ -168,28 +346,17 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
                 'bridges': bridges,
             })
 
-    logger.info(f"Discovered {len(discovered)} containers from Proxmox cluster ({proxmox_host})")
+    print(f"[DISCOVER] Total discovered: {len(discovered)}")
     return discovered
 
 
 def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22):
-    """Save a list of discovered Proxmox containers into the patch_manager database.
-
-    Args:
-        proxmox_containers: List of dicts from discover_proxmox_containers().
-        ssh_user: Default SSH user for imported containers.
-        ssh_port: Default SSH port for imported containers.
-
-    Returns:
-        dict with 'imported' (count), 'skipped' (count, due to unique constraint),
-        'errors' (list of error messages).
-    """
+    """Save a list of discovered Proxmox containers into the patch_manager database."""
     from .database import save_container, get_container_by_cid, get_container_by_name
 
     result = {'imported': 0, 'skipped': 0, 'errors': []}
 
     for c in proxmox_containers:
-        # Skip if already exists
         existing = get_container_by_cid(c['container_id']) or get_container_by_name(c['name'])
         if existing:
             logger.info(f"Skipping {c['name']} ({c['container_id']}): already imported")

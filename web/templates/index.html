@@ -349,6 +349,10 @@
                         <input type="text" id="discovery_token" name="token_name">
                     </div>
                     <div class="form-group">
+                        <label for="discovery_token_value">API Token Secret (the long token value from Proxmox):</label>
+                        <input type="password" id="discovery_token_value" name="token_value" placeholder="Paste the token secret here">
+                    </div>
+                    <div class="form-group">
                         <label for="discovery_port">Port:</label>
                         <input type="number" id="discovery_port" name="port" value="8006">
                     </div>
@@ -646,11 +650,23 @@
             msgEl.innerHTML = html;
         }
 
+        function getImportAuthBody() {
+            return {
+                host: document.getElementById('discovery_host').value,
+                user: document.getElementById('discovery_user').value,
+                password: document.getElementById('discovery_password').value,
+                token_name: document.getElementById('discovery_token').value,
+                token_value: document.getElementById('discovery_token_value').value,
+                port: document.getElementById('discovery_port').value,
+                verify_ssl: document.getElementById('discovery_verify_ssl').checked,
+            };
+        }
+
         function importAllDiscovered() {
             fetch('/proxmox/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
+                body: JSON.stringify(getImportAuthBody())
             })
             .then(response => response.json())
             .then(showResultMessage)
@@ -666,7 +682,7 @@
             fetch('/proxmox/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ container_ids: selected })
+                body: JSON.stringify({ ...getImportAuthBody(), container_ids: selected })
             })
             .then(response => response.json())
             .then(showResultMessage)

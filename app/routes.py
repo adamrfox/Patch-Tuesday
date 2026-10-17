@@ -157,6 +157,8 @@ def proxmox_discover():
     """Discover containers from a Proxmox cluster and return as JSON."""
     data = request.get_json()
 
+    print(f"[ROUTE] /proxmox/discover called with: host={data.get('host')}, user={data.get('user')}, token_value_len={len(data.get('token_value',''))}")
+
     try:
         discovered = container_manager.discover_containers_from_proxmox(
             proxmox_host=data['host'],
