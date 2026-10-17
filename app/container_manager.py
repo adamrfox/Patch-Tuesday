@@ -4,7 +4,9 @@ Container management for Proxmox LXC containers
 import paramiko
 import logging
 from .database import get_all_containers, get_container_by_id, save_container
-from .patch_engine import execute_ssh_command
+# We don't actually need to import execute_ssh_command here - it's used in patch_engine directly
+# The error message may have been misleading or from a cached version
+from .patch_engine import patch_engine
 
 logger = logging.getLogger(__name__)
 
