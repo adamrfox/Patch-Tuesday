@@ -44,6 +44,22 @@
             background-color: #007bff;
             color: white;
         }
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .sortable:hover {
+            background-color: #339dff;
+        }
+        .sort-arrow {
+            font-size: 0.7em;
+            margin-left: 4px;
+            opacity: 0.5;
+        }
+        th.active-sort .sort-arrow {
+            opacity: 1;
+        }
         tr:hover {
             background-color: #e9ecef;
         }
@@ -334,7 +350,7 @@
                 <form id="discoverForm">
                     <div class="form-group">
                         <label for="discovery_host">Cluster Host:</label>
-                        <input type="text" id="discovery_host" name="host" placeholder="192.168.1.10 or cluster hostname" required>
+                        <input type="text" id="discovery_host" name="host" placeholder="192.168.86.19 or cluster hostname — if DNS fails, try a direct IP" required>
                     </div>
                     <div class="form-group">
                         <label for="discovery_user">User:</label>
@@ -370,14 +386,13 @@
                 <p><strong>Cluster:</strong> <span id="discoveryHost"></span></p>
                 <table>
                     <thead>
-                        <tr>
-                            <th style="width:30px;"><input type="checkbox" id="selectAllChk" onclick="toggleSelectAll(this)"></th>
-                            <th>ID</th>
-                            <th>Name</th>
-                            <th>Status</th>
-                            <th>Node</th>
-                            <th>IPs</th>
-                            <th>MAC</th>
+                        <tr id="discoveryTableHeader">
+                            <th style="width:30px;"><input type="checkbox" id="selectAllChk" onclick="event.stopPropagation();toggleSelectAll(this)"></th>
+                            <th class="sortable" data-col="0" onclick="sortTable(0)">ID <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="1" onclick="sortTable(1)">Name <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="2" onclick="sortTable(2)">Status <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="3" onclick="sortTable(3)">Node <span class="sort-arrow">↕</span></th>
+                            <th class="sortable" data-col="4" onclick="sortTable(4)">IPs <span class="sort-arrow">↕</span></th>
                         </tr>
                     </thead>
                     <tbody id="discoveryTableBody">
@@ -598,23 +613,77 @@
             });
         });
 
+        // Sort state
+        let _sortCol = -1;
+        let _sortAsc = true;
+
+        function sortTable(colIndex) {
+            if (_sortCol === colIndex) {
+                _sortAsc = !_sortAsc;
+            } else {
+                _sortCol = colIndex;
+                _sortAsc = true;
+            }
+
+            // Update arrow indicators
+            const ths = document.querySelectorAll('#discoveryTableHeader .sortable');
+            ths.forEach(th => {
+                th.classList.remove('active-sort');
+                th.querySelector('.sort-arrow').textContent = '↕';
+            });
+
+            const active = ths[colIndex];
+            active.classList.add('active-sort');
+            active.querySelector('.sort-arrow').textContent = _sortAsc ? '↑' : '↓';
+
+            // Sort the tbody rows
+            const tbody = document.getElementById('discoveryTableBody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+
+            rows.sort((a, b) => {
+                let av = a.cells[colIndex].textContent.trim().toLowerCase();
+                let bv = b.cells[colIndex].textContent.trim().toLowerCase();
+                if (colIndex === 0) {
+                    const an = parseFloat(av);
+                    const bn = parseFloat(bv);
+                    if (!isNaN(an) && !isNaN(bn)) {
+                        return _sortAsc ? an - bn : bn - an;
+                    }
+                }
+                return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+            });
+
+            // Re-append sorted rows
+            for (const row of rows) tbody.appendChild(row);
+        }
+
         function showDiscoveryResults(containers, host) {
+            _discoveredContainers = containers;
             const tbody = document.getElementById('discoveryTableBody');
             tbody.innerHTML = '';
+
+            if (containers.length === 0) {
+                // DNS or auth failed — show a helpful message.
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td colspan="6" style="color:#856404;background:#fff3cd;">
+                    No containers discovered. This usually means the cluster hostname could not be resolved or authentication failed.<br>
+                    <strong>Tips:</strong> enter a direct IP (e.g. 192.168.86.19), check DNS, or use password auth.<br>
+                    (See server logs for details.)
+                </td>`;
+                tbody.appendChild(tr);
+            }
 
             containers.forEach(c => {
                 const tr = document.createElement('tr');
                 const ips = c.all_ips && c.all_ips.length > 0 ? c.all_ips.join(', ') : 'N/A';
-                const macs = c.mac_addresses && c.mac_addresses.length > 0 ? c.mac_addresses.join(', ') : 'N/A';
 
                 tr.innerHTML = `
                     <td><input type="checkbox" class="discoveryChk" value="${c.container_id}"></td>
                     <td>${c.container_id}</td>
                     <td>${c.name}</td>
-                    <td>${c.status}</td>
+                    <td class="status-${c.status}">${c.status}</td>
                     <td>${c.node}</td>
                     <td>${ips}</td>
-                    <td>${macs}</td>
                 `;
                 tbody.appendChild(tr);
             });

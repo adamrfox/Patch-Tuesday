@@ -8,11 +8,23 @@ Password auth uses ticket-based login.
 """
 
 import logging
+import time
 import urllib.parse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+# Shared session: keep-alive avoids a fresh DNS lookup + TLS handshake per
+# request, and connect retries ride out transient name-resolution failures.
+_session = requests.Session()
+_session.mount('https://', HTTPAdapter(max_retries=Retry(connect=3, read=0, backoff_factor=0.5)))
+
+# (base_url, user) -> (ticket, issued_at). Proxmox tickets are valid for 2h.
+_ticket_cache = {}
+_TICKET_TTL = 3600
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +70,29 @@ def _parse_net_config(net_string):
 def _extract_ip_from_cidr(cidr):
     """Strip CIDR suffix from an IP address string."""
     return cidr.split('/')[0] if cidr else None
+
+
+def _extract_interface_ips(interfaces):
+    """Extract IPv4 addresses from a /nodes/{node}/lxc/{vmid}/interfaces response.
+
+    Each entry looks like {'name': 'eth0', 'hwaddr': ..., 'inet': '192.168.1.5/24',
+    'inet6': ...}; newer Proxmox versions may also include an 'ip-addresses' list
+    of {'ip-address': ..., 'ip-address-type': 'inet', 'prefix': ...}.
+    Loopback is skipped.
+    """
+    ips = []
+    for iface in interfaces if isinstance(interfaces, list) else []:
+        if iface.get('name') == 'lo':
+            continue
+        candidates = [iface.get('inet')]
+        for entry in iface.get('ip-addresses') or []:
+            if entry.get('ip-address-type') == 'inet':
+                candidates.append(entry.get('ip-address'))
+        for cidr in candidates:
+            addr = _extract_ip_from_cidr(cidr)
+            if addr and not addr.startswith('127.') and addr not in ips:
+                ips.append(addr)
+    return ips
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +170,22 @@ def _api_request(method, base_url, user, key_name, token_value, verify_ssl,
         # --- Password path: ticket-based login via /access/ticket ---
         # In Proxmox 8+/9.x, /access/token returns 401 without auth.
         # We post directly to /access/ticket and use the ticket as a cookie.
-        login_resp = requests.post(
-            f'{base_url.rstrip("/")}/api2/json/access/ticket',
-            data={'username': user, 'password': data},
-            verify=verify_ssl, timeout=10,
-        )
-        login_resp.raise_for_status()
-        ticket_data = login_resp.json()['data']
-        pve_ticket = ticket_data.get('ticket') or ''
-        if not pve_ticket:
-            raise PermissionError("No ticket returned from /access/ticket")
+        cache_key = (base_url, user)
+        cached = _ticket_cache.get(cache_key)
+        if cached and time.time() - cached[1] < _TICKET_TTL:
+            pve_ticket = cached[0]
+        else:
+            login_resp = _session.post(
+                f'{base_url.rstrip("/")}/api2/json/access/ticket',
+                data={'username': user, 'password': data},
+                verify=verify_ssl, timeout=10,
+            )
+            login_resp.raise_for_status()
+            ticket_data = login_resp.json()['data']
+            pve_ticket = ticket_data.get('ticket') or ''
+            if not pve_ticket:
+                raise PermissionError("No ticket returned from /access/ticket")
+            _ticket_cache[cache_key] = (pve_ticket, time.time())
 
         # Use PVEAuthCookie as a cookie for subsequent requests
         cookies = {'PVEAuthCookie': pve_ticket}
@@ -155,13 +196,15 @@ def _api_request(method, base_url, user, key_name, token_value, verify_ssl,
         logger.debug(f"Auth: {headers['Authorization'][:30]}...")
 
     # Execute the request
-    r = requests.request(
+    r = _session.request(
         method, url, params=params, data=None,
         headers=headers, cookies=cookies,
         verify=verify_ssl, timeout=15,
     )
 
     if r.status_code == 401:
+        # Drop a possibly-expired cached ticket so the next call logs in again
+        _ticket_cache.pop((base_url, user), None)
         raise PermissionError(f"Authentication failed for {path}")
     elif r.status_code >= 400 and r.status_code < 500:
         raw_resp = r.text
@@ -227,6 +270,26 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
     # Parse key name from user string if present, otherwise use explicit arg
     full_user_with_key, key_name_from_user = _parse_token_user(proxmox_user)
     effective_key_name = token_name or key_name_from_user
+
+    # Resolve the hostname early — if DNS is broken, fail fast with a clear error.
+    # Proxmox clusters often resolve to multiple IPs; when DNS is flaky this saves
+    # the user from chasing down random timeout errors later.
+    resolved_ips = None
+    if isinstance(proxmox_host, str) and not proxmox_host.isdigit():
+        import socket as _socket
+
+        try:
+            infos = _socket.getaddrinfo(
+                proxmox_host, proxmox_port, family=_socket.AF_INET
+            )
+            resolved_ips = set(info[4][0] for info in infos)
+            print(f"[DNS] Resolved '{proxmox_host}' -> {resolved_ips}")
+        except Exception:
+            print(f"[ERROR] Cannot resolve hostname '{proxmox_host}'. "
+                  f"DNS may be misconfigured on this host. "
+                  f"You can try providing the cluster's direct IP via the 'host' "
+                  f"field in the Discovery form (e.g., 192.168.86.19).")
+            return []
 
     print(f"[DEBUG] Connecting to {base_url} as {full_user_with_key}")
     auth_type = 'API token' if has_token else 'password'
@@ -324,7 +387,8 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
                         break
                     net_parsed = nets[key]
                     ip_raw = net_parsed.get('ip', '')
-                    if ip_raw:
+                    # 'dhcp' / 'manual' are modes, not addresses
+                    if ip_raw and ip_raw not in ('dhcp', 'manual'):
                         all_ips.append(_extract_ip_from_cidr(ip_raw))
                     mac = net_parsed.get('hwaddr')
                     if mac:
@@ -332,6 +396,21 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
                     bridge = net_parsed.get('bridge')
                     if bridge and bridge not in bridges:
                         bridges.append(bridge)
+
+                # --- DHCP / guest-reported IPs (running containers only) ---
+                if status == 'running':
+                    try:
+                        interfaces = _api_request(
+                            'GET', base_url, full_user_with_key, effective_key_name,
+                            token_value if has_token else None, verify_ssl,
+                            f'/nodes/{node_name}/lxc/{vmid}/interfaces',
+                            data=proxmox_password
+                        )
+                        for addr in _extract_interface_ips(interfaces):
+                            if addr not in all_ips:
+                                all_ips.append(addr)
+                    except Exception as e:
+                        print(f"[DISCOVER]   WARNING getting interfaces for {name}: {e}")
             except Exception as e:
                 print(f"[DISCOVER]   ERROR getting config for {name}: {e}")
 
