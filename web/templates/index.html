@@ -129,6 +129,7 @@
             <div class="tab active" onclick="switchTab('dashboard')">Dashboard</div>
             <div class="tab" onclick="switchTab('containers')">Containers</div>
             <div class="tab" onclick="switchTab('scheduling')">Scheduling</div>
+            <div class="tab" onclick="switchTab('discovery')">Discovery</div>
             <div class="tab" onclick="switchTab('history')">Update History</div>
         </div>
 
@@ -324,6 +325,68 @@
             </div>
         </div>
 
+        <!-- Discovery Tab -->
+        <div id="discovery" class="tab-content">
+            <h2>Proxmox Discovery</h2>
+
+            <div class="card">
+                <h3>Connect to Proxmox Cluster</h3>
+                <form id="discoverForm">
+                    <div class="form-group">
+                        <label for="discovery_host">Cluster Host:</label>
+                        <input type="text" id="discovery_host" name="host" placeholder="192.168.1.10 or cluster hostname" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="discovery_user">User:</label>
+                        <input type="text" id="discovery_user" name="user" placeholder="root@pam" value="root@pam">
+                    </div>
+                    <div class="form-group">
+                        <label for="discovery_password">Password (optional — use token if available):</label>
+                        <input type="password" id="discovery_password" name="password">
+                    </div>
+                    <div class="form-group">
+                        <label for="discovery_token">API Token Name (optional, e.g. patch-tuesday):</label>
+                        <input type="text" id="discovery_token" name="token_name">
+                    </div>
+                    <div class="form-group">
+                        <label for="discovery_port">Port:</label>
+                        <input type="number" id="discovery_port" name="port" value="8006">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="discovery_verify_ssl" name="verify_ssl" checked> Verify SSL
+                        </label>
+                    </div>
+                    <button type="submit">Discover Containers</button>
+                </form>
+            </div>
+
+            <div class="card" id="discoveryResultsCard" style="display:none;">
+                <h3>Discovered Containers (<span id="discoveryCount">0</span>)</h3>
+                <p><strong>Cluster:</strong> <span id="discoveryHost"></span></p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:30px;"><input type="checkbox" id="selectAllChk" onclick="toggleSelectAll(this)"></th>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Node</th>
+                            <th>IPs</th>
+                            <th>MAC</th>
+                        </tr>
+                    </thead>
+                    <tbody id="discoveryTableBody">
+                    </tbody>
+                </table>
+                <div style="margin-top:15px;">
+                    <button class="btn-success" onclick="importAllDiscovered()">Import All</button>
+                    <button class="btn-success" onclick="importSelectedDiscovered()">Import Selected</button>
+                </div>
+                <div id="discoveryResultMessage" style="margin-top:15px;font-weight:bold;"></div>
+            </div>
+        </div>
+
         <!-- History Tab -->
         <div id="history" class="tab-content">
             <h2>Update History</h2>
@@ -499,6 +562,116 @@
                 alert('Error occurred while saving schedule');
             });
         });
+
+        // Discovery tab functions
+        document.getElementById('discoverForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {};
+            for (let [key, value] of formData.entries()) {
+                data[key] = value;
+            }
+            // Convert boolean fields
+            data.verify_ssl = document.getElementById('discovery_verify_ssl').checked;
+
+            fetch('/proxmox/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showDiscoveryResults(data.containers, document.getElementById('discovery_host').value);
+                } else {
+                    alert('Discovery failed: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error occurred during discovery');
+            });
+        });
+
+        function showDiscoveryResults(containers, host) {
+            const tbody = document.getElementById('discoveryTableBody');
+            tbody.innerHTML = '';
+
+            containers.forEach(c => {
+                const tr = document.createElement('tr');
+                const ips = c.all_ips && c.all_ips.length > 0 ? c.all_ips.join(', ') : 'N/A';
+                const macs = c.mac_addresses && c.mac_addresses.length > 0 ? c.mac_addresses.join(', ') : 'N/A';
+
+                tr.innerHTML = `
+                    <td><input type="checkbox" class="discoveryChk" value="${c.container_id}"></td>
+                    <td>${c.container_id}</td>
+                    <td>${c.name}</td>
+                    <td>${c.status}</td>
+                    <td>${c.node}</td>
+                    <td>${ips}</td>
+                    <td>${macs}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            document.getElementById('discoveryCount').textContent = containers.length;
+            document.getElementById('discoveryHost').textContent = host;
+            document.getElementById('discoveryResultsCard').style.display = 'block';
+            document.getElementById('discoveryResultMessage').textContent = '';
+        }
+
+        function toggleSelectAll(checkbox) {
+            const chks = document.querySelectorAll('.discoveryChk');
+            for (const chk of chks) {
+                chk.checked = checkbox.checked;
+            }
+        }
+
+        function getSelectedIds() {
+            return Array.from(document.querySelectorAll('.discoveryChk:checked')).map(c => c.value);
+        }
+
+        function showResultMessage(result) {
+            const msgEl = document.getElementById('discoveryResultMessage');
+            let html = '';
+            if (result.success) {
+                html += `<span style="color:green;">✓ Imported ${result.imported_count} container(s)</span>`;
+                if (result.skipped_count > 0) {
+                    html += ` &nbsp;|&nbsp; Skipped: ${result.skipped_count}`;
+                }
+            } else {
+                html += `<span style="color:red;">✗ Failed: ${result.message}</span>`;
+            }
+            msgEl.innerHTML = html;
+        }
+
+        function importAllDiscovered() {
+            fetch('/proxmox/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            })
+            .then(response => response.json())
+            .then(showResultMessage)
+            .catch(err => alert('Error: ' + err.message));
+        }
+
+        function importSelectedDiscovered() {
+            const selected = getSelectedIds();
+            if (selected.length === 0) {
+                alert('Select at least one container.');
+                return;
+            }
+            fetch('/proxmox/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ container_ids: selected })
+            })
+            .then(response => response.json())
+            .then(showResultMessage)
+            .catch(err => alert('Error: ' + err.message));
+        }
     </script>
 </body>
 </html>

@@ -26,13 +26,15 @@ def index():
     # you'd query the database for recent updates
 
     recent_updates = []
+    schedules = get_all_schedules()
 
     return render_template('index.html',
                          containers=containers,
                          container_count=container_count,
                          containers_with_updates=containers_with_updates,
                          successful_updates=successful_updates,
-                         recent_updates=recent_updates)
+                         recent_updates=recent_updates,
+                         schedules=schedules)
 
 @main.route('/container', methods=['POST'])
 def add_container():
@@ -146,5 +148,72 @@ def delete_schedule_route(schedule_id):
     try:
         delete_schedule(schedule_id)
         return jsonify({'success': True, 'message': 'Schedule deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@main.route('/proxmox/discover', methods=['POST'])
+def proxmox_discover():
+    """Discover containers from a Proxmox cluster and return as JSON."""
+    data = request.get_json()
+
+    try:
+        discovered = container_manager.discover_containers_from_proxmox(
+            proxmox_host=data['host'],
+            proxmox_user=data.get('user'),
+            proxmox_password=data.get('password'),
+            proxmox_port=int(data.get('port', 8006)),
+            verify_ssl=bool(data.get('verify_ssl', True)),
+            token_name=data.get('token_name'),
+            token_value=data.get('token_value'),
+        )
+        return jsonify({'success': True, 'containers': discovered})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@main.route('/proxmox/import', methods=['POST'])
+def proxmox_import():
+    """Import selected containers from a Proxmox cluster into the database."""
+    data = request.get_json()
+
+    try:
+        discovered = container_manager.discover_containers_from_proxmox(
+            proxmox_host=data['host'],
+            proxmox_user=data.get('user'),
+            proxmox_password=data.get('password'),
+            proxmox_port=int(data.get('port', 8006)),
+            verify_ssl=bool(data.get('verify_ssl', True)),
+            token_name=data.get('token_name'),
+            token_value=data.get('token_value'),
+        )
+
+        if not discovered:
+            return jsonify({'success': False, 'message': 'No containers discovered'})
+
+        # Filter by selected IDs
+        selected_ids = data.get('container_ids')  # None means all
+        if selected_ids is not None and len(selected_ids) > 0:
+            selected_set = set(str(s) for s in selected_ids)
+            to_import = [c for c in discovered if c['container_id'] in selected_set]
+        else:
+            to_import = discovered
+
+        result = container_manager.import_proxmox_containers(
+            to_import,
+            ssh_user=data.get('ssh_user', 'root'),
+            ssh_port=int(data.get('ssh_port', 22)),
+        )
+
+        return jsonify({
+            'success': True,
+            'imported_count': result['imported'],
+            'skipped_count': result['skipped'],
+            'errors': result['errors'],
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})

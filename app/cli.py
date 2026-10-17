@@ -129,8 +129,88 @@ def patch_all_containers(dry_run=False):
     except Exception as e:
         print(f"Error during batch patch operation: {str(e)}")
 
+def discover_containers(proxmox_host, proxmox_user=None, proxmox_password=None,
+                       proxmox_port=8006, verify_ssl=False, token_name=None, token_value=None):
+    """Discover and display containers from a Proxmox cluster."""
+    try:
+        discovered = container_manager.discover_containers_from_proxmox(
+            proxmox_host=proxmox_host,
+            proxmox_user=proxmox_user,
+            proxmox_password=proxmox_password,
+            proxmox_port=proxmox_port,
+            verify_ssl=verify_ssl,
+            token_name=token_name,
+            token_value=token_value,
+        )
+    except Exception as e:
+        print(f"Error discovering containers: {e}")
+        return
+
+    if not discovered:
+        print("No containers discovered. Check connection settings.")
+        return
+
+    print(f"\nDiscovered {len(discovered)} container(s) from Proxmox ({proxmox_host}):")
+    print(f"{'ID':<8} {'Name':<25} {'Status':<12} {'Node':<12} {'IPs':<30} {'MAC'}")
+    print("-" * 107)
+    for c in discovered:
+        ips_str = ', '.join(c.get('all_ips', []) or []) or 'N/A'
+        macs = c.get('mac_addresses', []) or []
+        mac_str = ', '.join(macs) if macs else 'N/A'
+        print(f"{c['container_id']:<8} {c['name']:<25} {c['status']:<12} "
+              f"{c['node']:<12} {ips_str:<30} {mac_str}")
+
+
+def import_containers(proxmox_host, proxmox_user=None, proxmox_password=None,
+                      proxmox_port=8006, verify_ssl=False, token_name=None, token_value=None,
+                      selected_ids=None, ssh_user='root', ssh_port=22):
+    """Discover and optionally import containers from a Proxmox cluster."""
+    try:
+        discovered = container_manager.discover_containers_from_proxmox(
+            proxmox_host=proxmox_host,
+            proxmox_user=proxmox_user,
+            proxmox_password=proxmox_password,
+            proxmox_port=proxmox_port,
+            verify_ssl=verify_ssl,
+            token_name=token_name,
+            token_value=token_value,
+        )
+    except Exception as e:
+        print(f"Error discovering containers: {e}")
+        return
+
+    if not discovered:
+        print("No containers discovered. Cannot import.")
+        return
+
+    # Filter by selected IDs
+    to_import = discovered
+    if selected_ids is not None and len(selected_ids) > 0:
+        selected_set = set(str(s) for s in selected_ids)
+        to_import = [c for c in discovered if c['container_id'] in selected_set]
+        skipped = [c for c in discovered if c['container_id'] not in selected_set]
+        print(f"Discovered {len(discovered)} container(s). Importing {len(to_import)}, skipping {len(skipped)}.")
+    else:
+        print(f"Discovered {len(discovered)} container(s).")
+
+    if not to_import:
+        print("No containers selected for import.")
+        return
+
+    result = container_manager.import_proxmox_containers(
+        to_import, ssh_user=ssh_user, ssh_port=ssh_port
+    )
+
+    print(f"\nImport complete:")
+    print(f"  Imported: {result['imported']}")
+    if result['skipped']:
+        print(f"  Skipped (already exists): {result['skipped']}")
+    if result['errors']:
+        for err in result['errors']:
+            print(f"  Error: {err}")
+
+
 def show_help():
-    """Show help information"""
     help_text = """
 Patch Management CLI Tool
 
@@ -141,6 +221,8 @@ Usage:
   update <id> [options]   - Update container configuration
   patch <id>              - Apply patches to a container
   patch-all               - Apply patches to all containers
+  proxmox-discover        - Discover containers from a Proxmox cluster
+  proxmox-import          - Import discovered containers into the database
   help                    - Show this help
 
 Options for 'add':
@@ -158,6 +240,9 @@ Examples:
   patch-manager add "web-server" "100" --ssh-host "192.168.1.100"
   patch-manager patch 1
   patch-manager patch-all
+  patch-manager proxmox-discover --host "192.168.1.10"
+  patch-manager proxmox-import --all --host "192.168.1.10"
+  patch-manager proxmox-import --container 100 --container 205 --host "192.168.1.10"
 """
     print(help_text)
 
@@ -233,6 +318,142 @@ def main():
         elif command == 'patch-all':
             dry_run = '--dry-run' in sys.argv
             patch_all_containers(dry_run)
+
+        elif command == 'proxmox-discover':
+            if len(sys.argv) < 3:
+                print("Error: proxmox-discover requires a Proxmox host.")
+                print("Usage: patch-manager proxmox-discover --host HOST [options]")
+                print("Options:")
+                print("  --host HOST          - Proxmox cluster hostname (required)")
+                print("  --user USER          - Username, e.g. root@pam")
+                print("  --password PASS      - Password (fallback if no token)")
+                print("  --port PORT          - API port (default: 8006)")
+                print("  --token-name NAME    - API token key name")
+                print("  --token-value VAL    - API token value")
+                print("  --insecure           - Skip SSL verification")
+                return
+
+            proxmox_host = None
+            proxmox_user = None
+            proxmox_password = None
+            proxmox_port = 8006
+            verify_ssl = True
+            token_name = None
+            token_value = None
+
+            i = 2
+            while i < len(sys.argv):
+                if sys.argv[i] == '--host' and i + 1 < len(sys.argv):
+                    proxmox_host = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--user' and i + 1 < len(sys.argv):
+                    proxmox_user = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--password' and i + 1 < len(sys.argv):
+                    proxmox_password = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--port' and i + 1 < len(sys.argv):
+                    try:
+                        proxmox_port = int(sys.argv[i + 1])
+                    except ValueError:
+                        print(f"Invalid port: {sys.argv[i + 1]}")
+                        return
+                    i += 2
+                elif sys.argv[i] == '--token-name' and i + 1 < len(sys.argv):
+                    token_name = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--token-value' and i + 1 < len(sys.argv):
+                    token_value = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] in ('--insecure', '-k'):
+                    verify_ssl = False
+                    i += 1
+                else:
+                    print(f"Unknown option: {sys.argv[i]}")
+                    return
+
+            if not proxmox_host:
+                print("Error: --host is required for proxmox-discover")
+                return
+
+            discover_containers(proxmox_host, proxmox_user, proxmox_password,
+                              proxmox_port, verify_ssl, token_name, token_value)
+
+        elif command == 'proxmox-import':
+            if len(sys.argv) < 3:
+                print("Error: proxmox-import requires a Proxmox host.")
+                print("Usage: patch-manager proxmox-import --host HOST [options]")
+                print("Options:")
+                print("  --host HOST          - Proxmox cluster hostname (required)")
+                print("  --all                - Import ALL discovered containers")
+                print("  --container ID       - Import specific container(s) (repeatable, by vmid)")
+                print("  --user USER          - Username, e.g. root@pam")
+                print("  --password PASS      - Password (fallback if no token)")
+                print("  --port PORT          - API port (default: 8006)")
+                print("  --token-name NAME    - API token key name")
+                print("  --token-value VAL    - API token value")
+                print("  --insecure           - Skip SSL verification")
+                return
+
+            proxmox_host = None
+            proxmox_user = None
+            proxmox_password = None
+            proxmox_port = 8006
+            verify_ssl = True
+            token_name = None
+            token_value = None
+            import_all = False
+            selected_ids = []
+
+            i = 2
+            while i < len(sys.argv):
+                if sys.argv[i] == '--host' and i + 1 < len(sys.argv):
+                    proxmox_host = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--all':
+                    import_all = True
+                    i += 1
+                elif sys.argv[i] in ('--container', '-c') and i + 1 < len(sys.argv):
+                    selected_ids.append(sys.argv[i + 1])
+                    i += 2
+                elif sys.argv[i] == '--user' and i + 1 < len(sys.argv):
+                    proxmox_user = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--password' and i + 1 < len(sys.argv):
+                    proxmox_password = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--port' and i + 1 < len(sys.argv):
+                    try:
+                        proxmox_port = int(sys.argv[i + 1])
+                    except ValueError:
+                        print(f"Invalid port: {sys.argv[i + 1]}")
+                        return
+                    i += 2
+                elif sys.argv[i] == '--token-name' and i + 1 < len(sys.argv):
+                    token_name = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--token-value' and i + 1 < len(sys.argv):
+                    token_value = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] in ('--insecure', '-k'):
+                    verify_ssl = False
+                    i += 1
+                else:
+                    print(f"Unknown option: {sys.argv[i]}")
+                    return
+
+            if not proxmox_host:
+                print("Error: --host is required for proxmox-import")
+                return
+
+            if not import_all and not selected_ids:
+                print("Error: use --all to import all discovered, or specify containers with --container ID (repeatable)")
+                return
+
+            final_ids = None if import_all else selected_ids
+            import_containers(proxmox_host, proxmox_user, proxmox_password,
+                            proxmox_port, verify_ssl, token_name, token_value,
+                            selected_ids=final_ids)
 
         elif command == 'help':
             show_help()

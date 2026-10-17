@@ -16,34 +16,75 @@ class ContainerManager:
     def __init__(self):
         self.containers = []
 
-    def discover_containers_from_proxmox(self, proxmox_host, proxmox_user, proxmox_password,
-                                       proxmox_port=8006, verify_ssl=False):
-        """
-        Discover containers from Proxmox
-        Note: This would require the Proxmox API client library
-        For now, we'll return a placeholder implementation
-        """
-        # In a real implementation, this would use the Proxmox API
-        # Example using proxmoxer library:
-        # from proxmoxer import ProxmoxAPI
-        # proxmox = ProxmoxAPI(proxmox_host, user=proxmox_user, password=proxmox_password,
-        #                     port=proxmox_port, verify_ssl=verify_ssl)
-        #
-        # containers = []
-        # for node in proxmox.nodes.get():
-        #     node_name = node['node']
-        #     for vm in proxmox.nodes(node_name).lxc.get():
-        #         containers.append({
-        #             'name': vm['name'],
-        #             'container_id': str(vm['vmid']),
-        #             'status': vm['status'],
-        #             'ssh_host': vm.get('net0', {}).get('ip') if vm.get('net0') else None
-        #         })
-        # return containers
+    def discover_containers_from_proxmox(self, proxmox_host, proxmox_user=None,
+                                         proxmox_password=None, proxmox_port=8006,
+                                         verify_ssl=False, token_name=None, token_value=None):
+        """Discover containers from Proxmox via REST API.
 
-        # Placeholder for now - in real implementation this would connect to Proxmox API
-        logger.info("Proxmox container discovery not implemented in this version")
-        return []
+        Supports both API token auth (user@realm!keyname) and password auth.
+
+        Args:
+            proxmox_host: Cluster hostname or IP address.
+            proxmox_user: Username (may use 'user@realm!keyname' format).
+            proxmox_password: Password for fallback auth.
+            proxmox_port: API port, default 8006.
+            verify_ssl: Verify SSL certificates.
+            token_name: API token key name.
+            token_value: API token secret value.
+
+        Returns:
+            List of dicts with name, container_id, status, node, primary_ip, etc.
+        """
+        if not proxmox_host:
+            logger.warning("discover_containers_from_proxmox called without proxmox_host")
+            return []
+
+        from . import proxmox_api as pa
+
+        try:
+            discovered = pa.discover_proxmox_containers(
+                proxmox_host=proxmox_host,
+                proxmox_user=proxmox_user,
+                proxmox_password=proxmox_password,
+                proxmox_port=proxmox_port,
+                verify_ssl=verify_ssl,
+                token_name=token_name,
+                token_value=token_value,
+            )
+            return discovered
+        except ValueError as e:
+            logger.warning(f"Cannot discover: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Error discovering containers from Proxmox: {e}")
+            return []
+
+    def import_proxmox_containers(self, proxmox_containers, ssh_user='root', ssh_port=22):
+        """Save discovered containers into the database.
+
+        Skips containers that already exist (same container_id or name).
+
+        Args:
+            proxmox_containers: List of dicts from discover_containers_from_proxmox().
+            ssh_user: Default SSH user.
+            ssh_port: Default SSH port.
+
+        Returns:
+            dict with 'imported', 'skipped', 'errors' keys.
+        """
+        if not proxmox_containers:
+            logger.warning("import_proxmox_containers called with no containers")
+            return {'imported': 0, 'skipped': 0, 'errors': []}
+
+        from . import proxmox_api as pa
+        try:
+            result = pa.import_proxmox_containers(
+                proxmox_containers, ssh_user=ssh_user, ssh_port=ssh_port
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error importing containers from Proxmox: {e}")
+            return {'imported': 0, 'skipped': 0, 'errors': [str(e)]}
 
     def add_container(self, name, container_id, ssh_host=None, ssh_port=22, ssh_user='root',
                      snapshot_enabled=True):
