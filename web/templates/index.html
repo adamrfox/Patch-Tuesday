@@ -134,6 +134,25 @@
         .tab-content.active {
             display: block;
         }
+
+        /* Discovery loading spinner */
+        #discoveryLoading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        #discoveryLoading .spinner {
+            border: 4px solid #dee2e6;
+            border-top-color: #007bff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            margin: 0 auto 10px;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -381,6 +400,11 @@
                 </form>
             </div>
 
+            <div id="discoveryLoading">
+                <div class="spinner"></div>
+                <div>Scanning Proxmox cluster…</div>
+            </div>
+
             <div class="card" id="discoveryResultsCard" style="display:none;">
                 <h3>Discovered Containers (<span id="discoveryCount">0</span>)</h3>
                 <p><strong>Cluster:</strong> <span id="discoveryHost"></span></p>
@@ -596,6 +620,9 @@
             // Convert boolean fields
             data.verify_ssl = document.getElementById('discovery_verify_ssl').checked;
 
+            const loading = document.getElementById('discoveryLoading');
+            loading.style.display = 'block';
+
             fetch('/proxmox/discover', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -606,11 +633,13 @@
                 if (data.success) {
                     showDiscoveryResults(data.containers, document.getElementById('discovery_host').value);
                 } else {
+                    document.getElementById('discoveryLoading').style.display = 'none';
                     alert('Discovery failed: ' + data.message);
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
+                document.getElementById('discoveryLoading').style.display = 'none';
                 alert('Error occurred during discovery');
             });
         });
@@ -666,6 +695,8 @@
         }
 
         function showDiscoveryResults(containers, host) {
+            const loading = document.getElementById('discoveryLoading');
+            loading.style.display = 'none';
             const _discoveredContainers = containers;
             const tbody = document.getElementById('discoveryTableBody');
             // Always clear first — prevents old rows from corrupting cell indices.
