@@ -402,7 +402,9 @@
                     <button class="btn-success" onclick="importAllDiscovered()">Import All</button>
                     <button class="btn-success" onclick="importSelectedDiscovered()">Import Selected</button>
                 </div>
-                <div id="discoveryResultMessage" style="margin-top:15px;font-weight:bold;"></div>
+                <div id="discoveryResultMessage" style="margin-top:15px;font-weight:bold;">
+                    <span id="debugSortTarget" style="color:#6c757d;font-size:0.85em;"></span>
+                </div>
             </div>
         </div>
 
@@ -618,6 +620,7 @@
         let _sortAsc = true;
 
         function sortTable(colIndex) {
+            console.log('sortTable called with', colIndex);
             if (_sortCol === colIndex) {
                 _sortAsc = !_sortAsc;
             } else {
@@ -627,23 +630,42 @@
 
             // Update arrow indicators
             const ths = document.querySelectorAll('#discoveryTableHeader .sortable');
+            console.log('Found', ths.length, 'sortable headers');
             ths.forEach(th => {
                 th.classList.remove('active-sort');
                 th.querySelector('.sort-arrow').textContent = '↕';
             });
 
             const activeIdx = colIndex - 1;
+            if (activeIdx < 0 || activeIdx >= ths.length) {
+                console.error('sortTable: invalid activeIdx', activeIdx, 'for colIndex', colIndex);
+                document.getElementById('debugSortTarget').textContent = 'ERROR: bad column index';
+                return;
+            }
             ths[activeIdx].classList.add('active-sort');
             ths[activeIdx].querySelector('.sort-arrow').textContent = _sortAsc ? '↑' : '↓';
 
-            const tbody = document.getElementById('discoveryTableBody');
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            if (rows.length === 0) return;
+            const tbodyEl = document.getElementById('discoveryTableBody');
+            if (!tbodyEl) {
+                console.error('sortTable: discoveryTableBody not found!');
+                document.getElementById('debugSortTarget').textContent = 'ERROR: table body missing';
+                return;
+            }
+            const rows = Array.from(tbodyEl.querySelectorAll('tr'));
+            if (rows.length === 0) {
+                console.warn('sortTable: no rows to sort yet');
+                document.getElementById('debugSortTarget').textContent = 'No rows to sort';
+                return;
+            }
 
-            // Read the data-field value from the clicked header to pick the right cell.
-            // This avoids any index math — ths[X].getAttribute('data-col') matches tbody td[data-field=X+1].
+            // Read the data-col value from the clicked header to pick the right cell.
             const fieldKey = ths[activeIdx].getAttribute('data-col');
-            console.log(`sortTable: colIndex=${colIndex}, dataCol=${fieldKey}`);
+
+            // Show which column is being sorted (visible debug output)
+            document.getElementById('debugSortTarget').textContent =
+                'Sorting by: ' + ths[activeIdx].textContent.trim() +
+                ' [field=' + fieldKey + ', asc=' + _sortAsc + ']';
+            console.log('sorting by data-field=', fieldKey, '(', ths[activeIdx].textContent.trim(), ')');
 
             rows.sort((a, b) => {
                 // Look up the cell by data-field attribute (robust to column reordering)
@@ -660,11 +682,11 @@
                 return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
             });
 
-            for (const row of rows) tbody.appendChild(row);
+            for (const row of rows) tbodyEl.appendChild(row);
         }
 
         function showDiscoveryResults(containers, host) {
-            _discoveredContainers = containers;
+            const _discoveredContainers = containers;
             const tbody = document.getElementById('discoveryTableBody');
             // Always clear first — prevents old rows from corrupting cell indices.
             while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
