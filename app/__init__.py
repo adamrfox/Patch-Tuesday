@@ -16,7 +16,7 @@ def create_app():
 
     # Configure the application
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
-    app.config['DATABASE_PATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'patch_manager.db')
+    app.config['DATABASE_PATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'patch_tuesday.db')
 
     # Initialize database
     init_db(app)

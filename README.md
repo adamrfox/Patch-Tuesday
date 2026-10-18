@@ -31,12 +31,12 @@ The system consists of three main components:
 1. Clone or download this repository
 2. Build the Docker image:
    ```
-   docker build -t patch-manager .
+   docker build -t patch-tuesday .
    ```
 
 3. Run the container:
    ```
-   docker run -p 5000:5000 patch-manager
+   docker run -p 5000:5000 patch-tuesday
    ```
 
 4. Access the web interface at `http://localhost:5000`
@@ -56,16 +56,16 @@ The system includes a command-line interface for automation:
 
 ```
 # List all containers
-patch-manager list
+patch-tuesday list
 
 # Add a new container
-patch-manager add "web-server" "100" --ssh-host "192.168.1.100"
+patch-tuesday add "web-server" "100" --ssh-host "192.168.1.100"
 
 # Apply patches to a specific container
-patch-manager patch 1
+patch-tuesday patch 1
 
 # Apply patches to all containers
-patch-manager patch-all
+patch-tuesday patch-all
 ```
 
 ## Configuration

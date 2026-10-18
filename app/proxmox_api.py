@@ -430,7 +430,7 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
 
 
 def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22):
-    """Save a list of discovered Proxmox containers into the patch_manager database."""
+    """Save a list of discovered Proxmox containers into the patch_tuesday database."""
     from .database import save_container, get_container_by_cid, get_container_by_name
 
     result = {'imported': 0, 'skipped': 0, 'errors': []}

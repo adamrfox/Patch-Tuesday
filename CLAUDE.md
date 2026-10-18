@@ -51,15 +51,15 @@ The system uses a modular approach with:
 ## Usage
 
 ### Running the Application
-1. Build Docker image: `docker build -t patch-manager .`
-2. Run container: `docker run -p 5000:5000 patch-manager`
+1. Build Docker image: `docker build -t patch-tuesday .`
+2. Run container: `docker run -p 5000:5000 patch-tuesday`
 
 ### Command Line Interface
 ```
-patch-manager list                    # List all containers
-patch-manager add "name" "id" [options]  # Add container
-patch-manager patch <id>              # Apply patches to container
-patch-manager patch-all               # Apply patches to all containers
+patch-tuesday list                    # List all containers
+patch-tuesday add "name" "id" [options]  # Add container
+patch-tuesday patch <id>              # Apply patches to container
+patch-tuesday patch-all               # Apply patches to all containers
 ```
 
 ## Deployment

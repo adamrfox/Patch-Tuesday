@@ -236,13 +236,13 @@ Options for 'update':
   --ssh-user USER        - SSH user
 
 Examples:
-  patch-manager list
-  patch-manager add "web-server" "100" --ssh-host "192.168.1.100"
-  patch-manager patch 1
-  patch-manager patch-all
-  patch-manager proxmox-discover --host "192.168.1.10"
-  patch-manager proxmox-import --all --host "192.168.1.10"
-  patch-manager proxmox-import --container 100 --container 205 --host "192.168.1.10"
+  patch-tuesday list
+  patch-tuesday add "web-server" "100" --ssh-host "192.168.1.100"
+  patch-tuesday patch 1
+  patch-tuesday patch-all
+  patch-tuesday proxmox-discover --host "192.168.1.10"
+  patch-tuesday proxmox-import --all --host "192.168.1.10"
+  patch-tuesday proxmox-import --container 100 --container 205 --host "192.168.1.10"
 """
     print(help_text)
 
@@ -322,7 +322,7 @@ def main():
         elif command == 'proxmox-discover':
             if len(sys.argv) < 3:
                 print("Error: proxmox-discover requires a Proxmox host.")
-                print("Usage: patch-manager proxmox-discover --host HOST [options]")
+                print("Usage: patch-tuesday proxmox-discover --host HOST [options]")
                 print("Options:")
                 print("  --host HOST          - Proxmox cluster hostname (required)")
                 print("  --user USER          - Username, e.g. root@pam")
@@ -382,7 +382,7 @@ def main():
         elif command == 'proxmox-import':
             if len(sys.argv) < 3:
                 print("Error: proxmox-import requires a Proxmox host.")
-                print("Usage: patch-manager proxmox-import --host HOST [options]")
+                print("Usage: patch-tuesday proxmox-import --host HOST [options]")
                 print("Options:")
                 print("  --host HOST          - Proxmox cluster hostname (required)")
                 print("  --all                - Import ALL discovered containers")

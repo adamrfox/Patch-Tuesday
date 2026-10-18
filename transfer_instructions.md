@@ -65,8 +65,8 @@ This system provides a complete patch management solution for Proxmox LXC contai
 
 The system can be deployed as a Docker container:
 ```bash
-docker build -t patch-manager .
-docker run -p 5000:5000 patch-manager
+docker build -t patch-tuesday .
+docker run -p 5000:5000 patch-tuesday
 ```
 
 ## Usage
@@ -76,8 +76,8 @@ Access at http://localhost:5000
 
 ### CLI Interface
 ```bash
-patch-manager list
-patch-manager add "container-name" "container-id"
-patch-manager patch 1
-patch-manager patch-all
+patch-tuesday list
+patch-tuesday add "container-name" "container-id"
+patch-tuesday patch 1
+patch-tuesday patch-all
 ```
