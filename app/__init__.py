@@ -12,7 +12,7 @@ from .database import init_db
 def create_app():
     """Create and configure the Flask application"""
 
-    app = Flask(__name__, template_folder='../web/templates')
+    app = Flask(__name__, template_folder='../web/templates', static_folder='../static')
 
     # Configure the application
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
