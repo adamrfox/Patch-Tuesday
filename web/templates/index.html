@@ -632,18 +632,25 @@
                 th.querySelector('.sort-arrow').textContent = '↕';
             });
 
-            const active = ths[colIndex - 1];
-            active.classList.add('active-sort');
-            active.querySelector('.sort-arrow').textContent = _sortAsc ? '↑' : '↓';
+            const activeIdx = colIndex - 1;
+            ths[activeIdx].classList.add('active-sort');
+            ths[activeIdx].querySelector('.sort-arrow').textContent = _sortAsc ? '↑' : '↓';
 
-            // Sort the tbody rows
             const tbody = document.getElementById('discoveryTableBody');
             const rows = Array.from(tbody.querySelectorAll('tr'));
+            if (rows.length === 0) return;
+
+            // Read the data-field value from the clicked header to pick the right cell.
+            // This avoids any index math — ths[X].getAttribute('data-col') matches tbody td[data-field=X+1].
+            const fieldKey = ths[activeIdx].getAttribute('data-col');
+            console.log(`sortTable: colIndex=${colIndex}, dataCol=${fieldKey}`);
 
             rows.sort((a, b) => {
-                let av = a.cells[colIndex].textContent.trim().toLowerCase();
-                let bv = b.cells[colIndex].textContent.trim().toLowerCase();
-                if (colIndex === 1) {
+                // Look up the cell by data-field attribute (robust to column reordering)
+                const av = a.querySelector(`td[data-field="${fieldKey}"]`)?.textContent.trim().toLowerCase() || '';
+                const bv = b.querySelector(`td[data-field="${fieldKey}"]`)?.textContent.trim().toLowerCase() || '';
+
+                if (fieldKey === '1') {
                     const an = parseFloat(av);
                     const bn = parseFloat(bv);
                     if (!isNaN(an) && !isNaN(bn)) {
@@ -653,14 +660,14 @@
                 return _sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
             });
 
-            // Re-append sorted rows
             for (const row of rows) tbody.appendChild(row);
         }
 
         function showDiscoveryResults(containers, host) {
             _discoveredContainers = containers;
             const tbody = document.getElementById('discoveryTableBody');
-            tbody.innerHTML = '';
+            // Always clear first — prevents old rows from corrupting cell indices.
+            while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
 
             if (containers.length === 0) {
                 // DNS or auth failed — show a helpful message.
@@ -671,19 +678,22 @@
                     (See server logs for details.)
                 </td>`;
                 tbody.appendChild(tr);
+                return;
             }
 
             containers.forEach(c => {
                 const tr = document.createElement('tr');
                 const ips = c.all_ips && c.all_ips.length > 0 ? c.all_ips.join(', ') : 'N/A';
 
+                // Explicit cells keyed by data attribute for robustness.
+                // Note: cell indices must match the th data-col values exactly.
                 tr.innerHTML = `
                     <td><input type="checkbox" class="discoveryChk" value="${c.container_id}"></td>
-                    <td>${c.container_id}</td>
-                    <td>${c.name}</td>
-                    <td class="status-${c.status}">${c.status}</td>
-                    <td>${c.node}</td>
-                    <td>${ips}</td>
+                    <td data-field="1">${c.container_id}</td>
+                    <td data-field="2">${c.name}</td>
+                    <td data-field="3" class="status-${c.status}">${c.status}</td>
+                    <td data-field="4">${c.node}</td>
+                    <td data-field="5">${ips}</td>
                 `;
                 tbody.appendChild(tr);
             });
