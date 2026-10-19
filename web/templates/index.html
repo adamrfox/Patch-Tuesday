@@ -1,4 +1,4 @@
-<!DOCTYPE html><!-- patch-tuesday v1.6 -->
+<!DOCTYPE html><!-- patch-tuesday v1.7 -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -166,6 +166,7 @@
             <div class="tab active" onclick="switchTab('dashboard')">Dashboard</div>
             <div class="tab" onclick="switchTab('containers')">Containers</div>
             <div class="tab" onclick="switchTab('scheduling')">Scheduling</div>
+            <div class="tab" onclick="switchTab('groups')">Groups</div>
             <div class="tab" onclick="switchTab('discovery')">Discovery</div>
             <div class="tab" onclick="switchTab('history')">Update History</div>
         </div>
@@ -280,8 +281,55 @@
             <h2>Scheduling</h2>
 
             <div class="card">
-                <h3>Configure Update Schedule</h3>
-                <p>Set automatic update schedules for containers.</p>
+                <h3>Group Schedule</h3>
+                <p>Apply a schedule to an entire group of containers.</p>
+                <form id="groupScheduleForm">
+                    <div class="form-group">
+                        <label for="schedule_group">Group:</label>
+                        <select id="schedule_group" name="group_id">
+                            <option value="">— select a group —</option>
+                            {% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="gschedule_type">Schedule Type:</label>
+                        <select id="gschedule_type" name="schedule_type">
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="gtime_of_day">Time of Day:</label>
+                        <input type="time" id="gtime_of_day" name="time_of_day">
+                    </div>
+                    <div class="form-group">
+                        <label for="gday_of_week">Day of Week (for weekly):</label>
+                        <select id="gday_of_week" name="day_of_week">
+                            <option value="1">Monday</option>
+                            <option value="2">Tuesday</option>
+                            <option value="3">Wednesday</option>
+                            <option value="4">Thursday</option>
+                            <option value="5">Friday</option>
+                            <option value="6">Saturday</option>
+                            <option value="0">Sunday</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="gmaintenance_start">Maintenance Window Start:</label>
+                        <input type="time" id="gmaintenance_start" name="maintenance_window_start">
+                    </div>
+                    <div class="form-group">
+                        <label for="gmaintenance_end">Maintenance Window End:</label>
+                        <input type="time" id="gmaintenance_end" name="maintenance_window_end">
+                    </div>
+                    <button type="submit">Save Group Schedule</button>
+                    <button type="button" class="btn-danger" onclick="deleteGroupSchedule()" style="margin-left:10px;">Delete Group Schedule</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Individual Container Schedule</h3>
+                <p>Set a schedule for a single container (overrides any group schedule for that container).</p>
                 <form id="scheduleForm">
                     <div class="form-group">
                         <label for="schedule_container">Container:</label>
@@ -332,22 +380,24 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Container</th>
+                                <th>Container / Group</th>
                                 <th>Schedule Type</th>
                                 <th>Time</th>
                                 <th>Maintenance Window</th>
                                 <th>Status</th>
+                                <th>Source</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for schedule in schedules %}
                             <tr>
-                                <td>{{ schedule.container_name }}</td>
+                                <td>{{ schedule.container_name or ('Group: ' + schedule.group_name) }}</td>
                                 <td>{{ schedule.schedule_type.title() }}</td>
                                 <td>{{ schedule.time_of_day }}</td>
                                 <td>{{ schedule.maintenance_window_start or 'N/A' }} - {{ schedule.maintenance_window_end or 'N/A' }}</td>
                                 <td>{{ 'Enabled' if schedule.enabled else 'Disabled' }}</td>
+                                <td>{{ schedule.schedule_source | default('individual') }}</td>
                                 <td>
                                     <button onclick="toggleSchedule({{ schedule.id }})">Toggle</button>
                                     <button class="btn-danger" onclick="deleteSchedule({{ schedule.id }})">Delete</button>
@@ -359,6 +409,31 @@
                 {% else %}
                     <p>No schedules configured.</p>
                 {% endif %}
+            </div>
+        </div>
+
+        <!-- Groups Tab -->
+        <div id="groups" class="tab-content">
+            <h2>Groups</h2>
+
+            <div class="card">
+                <h3>Create New Group</h3>
+                <form id="addGroupForm">
+                    <div class="form-group">
+                        <label for="group_name">Group Name:</label>
+                        <input type="text" id="group_name" name="name" required placeholder="e.g. Web Servers">
+                    </div>
+                    <div class="form-group">
+                        <label for="group_desc">Description:</label>
+                        <input type="text" id="group_desc" name="description" placeholder="Optional description">
+                    </div>
+                    <button type="submit">Create Group</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Scheduled Groups</h3>
+                <div id="groupsList"><p>Loading…</p></div>
             </div>
         </div>
 
@@ -802,6 +877,196 @@
             .then(showResultMessage)
             .catch(err => alert('Error: ' + err.message));
         }
+
+        // -----------------------------------------------------------------------
+        // Group management
+        // -----------------------------------------------------------------------
+
+        let _currentGroupScheduleId = null;
+
+        function loadGroups() {
+            fetch('/groups')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) { document.getElementById('groupsList').innerHTML = '<p>Error loading groups</p>'; return; }
+                    renderGroups(data.groups);
+                })
+                .catch(() => { document.getElementById('groupsList').innerHTML = '<p>Error loading groups</p>'; });
+        }
+
+        function renderGroups(groups) {
+            const el = document.getElementById('groupsList');
+            if (!groups || groups.length === 0) {
+                el.innerHTML = '<p>No groups yet. Create one above.</p>';
+                return;
+            }
+            let html = '';
+            groups.forEach(g => {
+                html += `<div class="card" style="margin-bottom:15px;border-left:4px solid #007bff;">`;
+                html += `<h3>${esc(g.name)} <span style="font-weight:normal;font-size:0.85em;color:#6c757d;">(member_count: ${g.member_count})</span>`;
+                html += `<button class="btn-danger" onclick="deleteGroup(${g.id})" style="float:right;font-size:0.8em;padding:4px 10px;">Delete</button></h3>`;
+                if (g.description) html += `<p style="color:#6c757d;margin-bottom:10px;">${esc(g.description)}</p>`;
+
+                // Members
+                html += `<div id="group-members-${g.id}"><p>Loading members…</p></div>`;
+
+                // Schedule
+                html += `<div id="group-schedule-${g.id}">Loading schedule…</div>`;
+                html += `</div>`;
+            });
+            el.innerHTML = html;
+
+            // Load members and schedules in parallel
+            groups.forEach(g => {
+                Promise.all([
+                    fetch(`/groups/${g.id}/members`).then(r => r.json()),
+                    fetch(`/groups/${g.id}/schedule`).then(r => r.json()),
+                ]).then(([mRes, sRes]) => {
+                    if (mRes.success) renderGroupMembers(g.id, mRes.members);
+                    if (sRes.success) renderGroupSchedule(g.id, sRes.schedule);
+                });
+            });
+        }
+
+        function renderGroupMembers(groupId, members) {
+            const el = document.getElementById(`group-members-${groupId}`);
+            if (!members || members.length === 0) {
+                el.innerHTML = '<p style="font-size:0.9em;color:#6c757d;">No members yet.</p>';
+                return;
+            }
+            let html = '<table><thead><tr><th>Name</th><th>ID</th><th>Action</th></tr></thead><tbody>';
+            members.forEach(m => {
+                html += `<tr><td>${esc(m.name)}</td><td>${m.container_id}</td>`;
+                html += `<td><button onclick="toggleGroupMember(${groupId}, ${m.id})" style="font-size:0.8em;padding:2px 8px;">Remove</button></td></tr>`;
+            });
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        }
+
+        function renderGroupSchedule(groupId, schedule) {
+            const el = document.getElementById(`group-schedule-${groupId}`);
+            if (!schedule) {
+                _currentGroupScheduleId = null;
+                el.innerHTML = '<button onclick="assignContainerToGroupPrompt(' + groupId + ')" style="margin-top:5px;">+ Add member</button>';
+                return;
+            }
+            el.innerHTML = `<p style="margin:8px 0;"><strong>${schedule.schedule_type}</strong> at ${schedule.time_of_day || '?'} &nbsp;|&nbsp; Window: ${schedule.maintenance_window_start || 'none'}–${schedule.maintenance_window_end || 'none'} &nbsp;|&nbsp; <em>${schedule.enabled ? 'Enabled' : 'Disabled'}</em></p>`;
+        }
+
+        // Create group form
+        document.getElementById('addGroupForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const name = document.getElementById('group_name').value.trim();
+            const desc = document.getElementById('group_desc').value.trim();
+            if (!name) return;
+
+            fetch('/groups', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, description: desc })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('group_name').value = '';
+                    document.getElementById('group_desc').value = '';
+                    loadGroups();
+                    // refresh group dropdown on scheduling tab
+                    const sel = document.getElementById('schedule_group');
+                    const opt = document.createElement('option');
+                    opt.value = data.group.id;
+                    opt.textContent = data.group.name;
+                    sel.appendChild(opt);
+                } else {
+                    alert('Failed to create group: ' + (data.message || ''));
+                }
+            })
+            .catch(() => alert('Error creating group'));
+        });
+
+        function deleteGroup(id) {
+            if (!confirm('Delete this group? Members will be unaffected.')) return;
+            fetch(`/groups/${id}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) loadGroups();
+                    else alert('Failed to delete group: ' + (data.message || ''));
+                })
+                .catch(() => alert('Error deleting group'));
+        }
+
+        function toggleGroupMember(groupId, containerId) {
+            fetch(`/groups/${groupId}/members/${containerId}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) loadGroups();
+                });
+        }
+
+        function assignContainerToGroupPrompt(groupId) {
+            // Build a simple prompt with container list
+            const sel = document.createElement('select');
+            {% for c in containers %}
+            sel.innerHTML += `<option value="${c.id}">${esc('${c.name}')}</option>`;
+            {% endfor %}
+            if (!sel.options.length) { alert('No containers available.'); return; }
+
+            const result = prompt('Enter the container ID to add:');
+            if (!result) return;
+            fetch(`/groups/${groupId}/members`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ container_id: parseInt(result) })
+            })
+            .then(r => r.json())
+            .then(data => { if (data.success) loadGroups(); else alert('Error: ' + data.message); });
+        }
+
+        // Group schedule form
+        document.getElementById('groupScheduleForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const groupId = parseInt(document.getElementById('schedule_group').value);
+            if (!groupId) { alert('Select a group.'); return; }
+
+            fetch(`/groups/${groupId}/schedule`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    schedule_type: document.getElementById('gschedule_type').value,
+                    time_of_day: document.getElementById('gtime_of_day').value,
+                    day_of_week: document.getElementById('gday_of_week').value,
+                    maintenance_window_start: document.getElementById('gmaintenance_start').value,
+                    maintenance_window_end: document.getElementById('gmaintenance_end').value,
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) { loadGroups(); alert('Group schedule saved.'); }
+                else alert('Error: ' + (data.message || ''));
+            });
+        });
+
+        function deleteGroupSchedule() {
+            const groupId = parseInt(document.getElementById('schedule_group').value);
+            if (!groupId) { alert('Select a group first.'); return; }
+            if (!confirm('Delete the schedule for this group?')) return;
+            fetch(`/schedule/group/${groupId}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { loadGroups(); alert('Schedule deleted.'); }
+                    else alert('Error: ' + data.message);
+                });
+        }
+
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // Load groups when switching to Groups tab
+        const _origSwitchTab = switchTab;
+        switchTab = function(tabName) {
+            _origSwitchTab.call(this, tabName);
+            if (tabName === 'groups') loadGroups();
+        };
+
     </script>
 </body>
 </html>

@@ -4,7 +4,7 @@ Scheduling system for patch operations
 import logging
 from datetime import datetime, time
 from croniter import croniter
-from .database import get_all_schedules, get_container_by_id
+from .database import get_active_schedules, get_container_by_id, delete_schedule as db_delete_schedule, save_schedule
 from .patch_engine import patch_engine
 
 logger = logging.getLogger(__name__)
@@ -16,10 +16,10 @@ class Scheduler:
         self.schedules = []
 
     def load_schedules(self):
-        """Load all schedules from database"""
+        """Load all active schedules from database"""
         # This would typically be called at startup
-        self.schedules = get_all_schedules()
-        logger.info(f"Loaded {len(self.schedules)} schedules")
+        self.schedules = get_active_schedules()
+        logger.info(f"Loaded {len(self.schedules)} effective schedules")
 
     def is_schedule_active(self, schedule):
         """Check if a schedule is currently active (within maintenance window)"""
@@ -71,16 +71,21 @@ class Scheduler:
         self.load_schedules()
 
         results = []
+        patched = set()  # track container_ids already patched this pass
         for schedule in self.schedules:
             try:
+                cid = schedule['container_id']
+                if cid in patched:
+                    logger.debug(f"Skipping {cid} — already patched by another schedule")
+                    continue
+
                 # Check if schedule is active
                 if not self.is_schedule_active(schedule):
                     continue
 
-                # Get the container for this schedule
-                container = get_container_by_id(schedule['container_id'])
+                container = get_container_by_id(cid)
                 if not container:
-                    logger.warning(f"Container {schedule['container_id']} not found for schedule")
+                    logger.warning(f"Container {cid} not found for schedule {schedule.get('id')}")
                     continue
 
                 # Check if it's time to run
@@ -88,11 +93,10 @@ class Scheduler:
                 if not next_run:
                     continue
 
-                # For simplicity, we'll just run the patch now (in a real system,
-                # this would be triggered by cron or a background task)
-                logger.info(f"Running scheduled patch for {container['name']}")
+                logger.info(f"Running scheduled patch for {container['name']} (source: {schedule.get('schedule_source', 'unknown')})")
 
-                result = patch_engine.apply_patches(schedule['container_id'])
+                result = patch_engine.apply_patches(cid)
+                patched.add(cid)
                 results.append({
                     'container': container['name'],
                     'schedule_id': schedule['id'],
@@ -105,22 +109,29 @@ class Scheduler:
 
         return results
 
-    def add_schedule(self, container_id, schedule_type='daily', time_of_day='02:00',
+    def add_schedule(self, container_id=None, schedule_type='daily', time_of_day='02:00',
                     day_of_week=1, enabled=True, maintenance_window_start=None,
-                    maintenance_window_end=None):
-        """Add a new schedule"""
-        # In a real implementation, this would save to database
-        pass
+                    maintenance_window_end=None, group_id=None):
+        """Add a new schedule (individual or group)."""
+        schedule_data = {
+            'container_id': container_id,
+            'group_id': group_id,
+            'schedule_type': schedule_type,
+            'time_of_day': time_of_day,
+            'day_of_week': day_of_week,
+            'enabled': enabled,
+            'maintenance_window_start': maintenance_window_start,
+            'maintenance_window_end': maintenance_window_end,
+        }
+        save_schedule(schedule_data)
 
     def update_schedule(self, schedule_id, **kwargs):
-        """Update an existing schedule"""
-        # In a real implementation, this would update the database
+        """Update an existing schedule.  Routes call save_schedule directly."""
         pass
 
     def delete_schedule(self, schedule_id):
-        """Delete a schedule"""
-        # In a real implementation, this would remove from database
-        pass
+        """Delete a schedule."""
+        db_delete_schedule(schedule_id)
 
 # Global instance for use in the application
 scheduler = Scheduler()

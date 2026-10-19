@@ -103,6 +103,9 @@ def init_db(app):
                 VALUES (?, ?, ?)
             ''', (key, value, description))
 
+        # Ensure groups schema exists (idempotent migration)
+        _ensure_groups_schema(db)
+
         db.commit()
 
 def get_container_by_id(container_id):
@@ -249,3 +252,204 @@ def delete_schedule(schedule_id):
     db = get_db()
     db.execute('DELETE FROM schedules WHERE id = ?', (schedule_id,))
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Groups migration — run at startup
+# ---------------------------------------------------------------------------
+
+def _ensure_groups_schema(db):
+    """Ensure groups / group_members tables and schedules.group_id column exist."""
+    # 1) Check if group_id already exists on schedules
+    cols = {row[1] for row in db.execute('PRAGMA table_info(schedules)').fetchall()}
+    if 'group_id' not in cols:
+        db.execute('ALTER TABLE schedules ADD COLUMN group_id INTEGER')
+
+    # 2) Create groups table (idempotent)
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 3) Create group_members junction table
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER NOT NULL,
+            container_id INTEGER NOT NULL,
+            PRIMARY KEY (group_id, container_id),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (container_id) REFERENCES containers(id) ON DELETE CASCADE
+        )
+    ''')
+
+
+# ---------------------------------------------------------------------------
+# Group CRUD
+# ---------------------------------------------------------------------------
+
+def get_all_groups():
+    """Return all groups with member counts."""
+    db = get_db()
+    rows = db.execute('''
+        SELECT g.id, g.name, g.description, g.created_at, g.updated_at,
+               COUNT(gm.container_id) AS member_count
+        FROM groups g
+        LEFT JOIN group_members gm ON gm.group_id = g.id
+        GROUP BY g.id
+        ORDER BY g.name
+    ''').fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_group_by_id(group_id):
+    """Return a single group dict, or None."""
+    db = get_db()
+    row = db.execute('SELECT * FROM groups WHERE id = ?', (group_id,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d['member_count'] = db.execute(
+        'SELECT COUNT(*) AS cnt FROM group_members WHERE group_id = ?', (group_id,)
+    ).fetchone()['cnt']
+    return d
+
+
+def save_group(group_data):
+    """Insert or update a group.  group_data must contain at least 'name'.
+    For updates also include 'id'."""
+    db = get_db()
+    if 'id' in group_data and group_data['id']:
+        db.execute('''
+            UPDATE groups SET name=?, description=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        ''', (group_data['name'], group_data.get('description', ''), group_data['id']))
+    else:
+        db.execute(
+            'INSERT INTO groups (name, description) VALUES (?, ?)',
+            (group_data['name'], group_data.get('description', ''))
+        )
+    db.commit()
+
+
+def delete_group(group_id):
+    """Delete a group (FK cascade removes group_members rows). Also remove orphaned schedules."""
+    db = get_db()
+    # Remove any schedules assigned to this group
+    db.execute('DELETE FROM schedules WHERE group_id = ?', (group_id,))
+    db.execute('DELETE FROM groups WHERE id = ?', (group_id,))
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Group ↔ Container membership
+# ---------------------------------------------------------------------------
+
+def get_group_members(group_id):
+    """Return list of container dicts that belong to this group."""
+    db = get_db()
+    rows = db.execute('''
+        SELECT c.* FROM containers c
+        JOIN group_members gm ON gm.container_id = c.id
+        WHERE gm.group_id = ?
+        ORDER BY c.name
+    ''', (group_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_groups_for_container(container_id):
+    """Return list of group dicts that contain this container."""
+    db = get_db()
+    rows = db.execute('''
+        SELECT g.* FROM groups g
+        JOIN group_members gm ON gm.group_id = g.id
+        WHERE gm.container_id = ?
+        ORDER BY g.name
+    ''', (container_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_group_member(group_id, container_id):
+    """Assign a container to a group.  Idempotent (INSERT OR IGNORE)."""
+    db = get_db()
+    db.execute('INSERT OR IGNORE INTO group_members (group_id, container_id) VALUES (?, ?)',
+               (group_id, container_id))
+    db.commit()
+
+
+def remove_group_member(group_id, container_id):
+    """Remove a container from a group."""
+    db = get_db()
+    db.execute('DELETE FROM group_members WHERE group_id = ? AND container_id = ?',
+               (group_id, container_id))
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Group-aware schedule queries
+# ---------------------------------------------------------------------------
+
+def get_active_schedules():
+    """Return all effective schedules as a flat list of dicts.
+
+    Priority resolution: if a container has both an individual schedule and a
+    group schedule, only the individual one is emitted (more specific).
+
+    Each dict mirrors the schedules table columns plus two extras:
+      - schedule_source: 'individual' or 'group'
+      - group_name: present for group schedules
+    """
+    db = get_db()
+
+    # --- Individual schedules ---
+    individual = db.execute('''
+        SELECT s.*, 'individual' AS schedule_source, NULL AS group_name
+        FROM schedules s
+        WHERE s.container_id IS NOT NULL AND s.enabled = 1
+    ''').fetchall()
+
+    # Collect container ids that have individual schedules
+    individual_ids = {r['container_id'] for r in individual}
+
+    results = [dict(r) for r in individual]
+
+    # --- Group schedules ---
+    group_schedules = db.execute('''
+        SELECT s.*, 'group' AS schedule_source, g.name AS group_name
+        FROM schedules s
+        JOIN groups g ON g.id = s.group_id
+        WHERE s.group_id IS NOT NULL AND s.enabled = 1
+    ''').fetchall()
+
+    for gs in group_schedules:
+        members = db.execute('''
+            SELECT c.* FROM containers c
+            JOIN group_members gm ON gm.container_id = c.id
+            WHERE gm.group_id = ?
+        ''', (gs['group_id'],)).fetchall()
+
+        for member in members:
+            if member['id'] not in individual_ids:
+                row = dict(gs)
+                row['container_id'] = member['id']          # target container for this iteration
+                row['container_name'] = member['name']      # display name
+                row['schedule_type'] = gs['schedule_type']  # schedule info from the group schedule
+                row['time_of_day'] = gs['time_of_day']
+                row['day_of_week'] = gs['day_of_week']
+                row['enabled'] = gs['enabled']
+                results.append(row)
+
+    return results
+
+
+def get_schedule_by_group(group_id):
+    """Return the schedule assigned to a group, or None."""
+    db = get_db()
+    row = db.execute(
+        'SELECT * FROM schedules WHERE group_id = ? AND enabled = 1', (group_id,)
+    ).fetchone()
+    return dict(row) if row else None
