@@ -183,10 +183,13 @@ def proxmox_discover():
         )
 
         # Filter out 172.x IPs if requested
+        filtered_count = 0
         if data.get('ignore_172'):
+            before = len(discovered)
             discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
+            filtered_count = before - len(discovered)
 
-        return jsonify({'success': True, 'containers': discovered})
+        return jsonify({'success': True, 'containers': discovered, 'filtered_172': filtered_count})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
     except Exception as e:
@@ -552,6 +555,8 @@ def discover_all_clusters():
         from .proxmox_api import discover_from_cluster
         from .database import get_all_proxmox_clusters
 
+        data = request.get_json() or {}
+
         clusters = get_all_proxmox_clusters()
         if not clusters:
             return jsonify({'success': False, 'message': 'No Proxmox clusters configured'})
@@ -569,10 +574,13 @@ def discover_all_clusters():
                 logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
 
         # Filter out 172.x IPs if requested
+        filtered_count = 0
         if data.get('ignore_172'):
+            original = len(all_containers)
             all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
+            filtered_count = original - len(all_containers)
 
-        return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters)})
+        return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters), 'filtered_172': filtered_count})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
     except Exception as e:

@@ -575,7 +575,7 @@
             </div>
 
             <div class="card" id="discoveryResultsCard" style="display:none;">
-                <h3>Discovered Containers (<span id="discoveryCount">0</span>)</h3>
+                <h3>Discovered Containers (<span id="discoveryCount">0</span><span id="filteredLabel" style="display:none;color:#6c757d;font-size:0.7em;"> (–X filtered)</span>)</h3>
                 <p><strong>Cluster:</strong> <span id="discoveryHost"></span></p>
                 <table>
                     <thead>
@@ -824,7 +824,7 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showDiscoveryResults(data.containers, document.getElementById('discovery_host').value);
+                    showDiscoveryResults(data.containers, document.getElementById('discovery_host').value, data.filtered_172);
                 } else {
                     document.getElementById('discoveryLoading').style.display = 'none';
                     alert('Discovery failed: ' + data.message);
@@ -887,7 +887,7 @@
             for (const row of rows) tbody.appendChild(row);
         }
 
-        function showDiscoveryResults(containers, host) {
+        function showDiscoveryResults(containers, host, filteredCount) {
             const loading = document.getElementById('discoveryLoading');
             loading.style.display = 'none';
             const _discoveredContainers = containers;
@@ -945,6 +945,13 @@
             });
 
             document.getElementById('discoveryCount').textContent = containers.length;
+            if (filteredCount && filteredCount > 0) {
+                const label = document.getElementById('filteredLabel');
+                label.textContent = ` (${containers.length} shown – ${filteredCount} filtered)`;
+                label.style.display = 'inline';
+            } else {
+                document.getElementById('filteredLabel').style.display = 'none';
+            }
             document.getElementById('discoveryHost').textContent = host;
             document.getElementById('discoveryResultsCard').style.display = 'block';
             document.getElementById('discoveryResultMessage').textContent = '';
@@ -1194,7 +1201,7 @@
                         alert('Discovery failed: ' + data.message);
                         return;
                     }
-                    showDiscoveryResults(data.containers, `${data.clusters_checked} cluster(s)`);
+                    showDiscoveryResults(data.containers, `${data.clusters_checked} cluster(s)`, data.filtered_172);
                     // Store the cluster_id hint for import
                     _importClusterId = null;  // Will be inferred from the first container
                 })
