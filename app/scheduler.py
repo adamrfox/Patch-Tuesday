@@ -6,6 +6,7 @@ from datetime import datetime, time
 from croniter import croniter
 from .database import get_active_schedules, get_container_by_id, delete_schedule as db_delete_schedule, save_schedule
 from .patch_engine import patch_engine
+from .alerting import alerting_system
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,16 @@ class Scheduler:
                     'schedule_id': schedule['id'],
                     'result': result
                 })
+
+                # Skip notifications when nothing was actually updated
+                if not result.get('skipped'):
+                    status = 'success' if result.get('success') else 'failed'
+                    alerting_system.send_update_notification(
+                        container['name'],
+                        status,
+                        packages_updated=result.get('packages_updated'),
+                        error_message=result.get('error'),
+                    )
 
             except Exception as e:
                 logger.error(f"Error running scheduled patch for {schedule.get('container_id', 'unknown')}: {str(e)}")

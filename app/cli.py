@@ -71,6 +71,12 @@ def update_container(container_id, ssh_host=None, ssh_port=None, ssh_user=None):
 def patch_container(container_id, dry_run=False):
     """Apply patches to a container"""
     try:
+        # Look up the container name for notifications
+        container = None
+        try:
+            container = get_container_by_id(container_id)
+        except Exception:
+            pass  # may fail outside Flask context
         if dry_run:
             print("Dry run - checking for updates...")
             result = patch_engine.check_updates_available(container_id)
@@ -84,15 +90,17 @@ def patch_container(container_id, dry_run=False):
 
             if result['success']:
                 print(f"Successfully patched container {container_id}")
+                name = (container or {}).get('name', str(container_id))
                 alerting_system.send_update_notification(
-                    container_id,
+                    name,
                     'success',
                     packages_updated=result.get('packages_updated')
                 )
             else:
                 print(f"Failed to patch container {container_id}: {result.get('error', 'Unknown error')}")
+                name = (container or {}).get('name', str(container_id))
                 alerting_system.send_update_notification(
-                    container_id,
+                    name,
                     'failed',
                     error_message=result.get('error')
                 )

@@ -59,7 +59,7 @@ class ContainerManager:
             logger.error(f"Error discovering containers from Proxmox: {e}")
             return []
 
-    def import_proxmox_containers(self, proxmox_containers, ssh_user='root', ssh_port=22):
+    def import_proxmox_containers(self, proxmox_containers, ssh_user='root', ssh_port=22, cluster_id=None):
         """Save discovered containers into the database.
 
         Skips containers that already exist (same container_id or name).
@@ -68,6 +68,7 @@ class ContainerManager:
             proxmox_containers: List of dicts from discover_containers_from_proxmox().
             ssh_user: Default SSH user.
             ssh_port: Default SSH port.
+            cluster_id: Optional Proxmox cluster row ID for tracking origin.
 
         Returns:
             dict with 'imported', 'skipped', 'errors' keys.

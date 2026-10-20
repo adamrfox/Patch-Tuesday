@@ -328,6 +328,11 @@ def _ensure_proxmox_schema(db):
             ON containers(last_cluster_id)
         ''')
 
+    # 3) Add proxmox_node column (needed for snapshot/rollback lookups)
+    cols = {row[1] for row in db.execute('PRAGMA table_info(containers)').fetchall()}
+    if 'proxmox_node' not in cols:
+        db.execute('ALTER TABLE containers ADD COLUMN proxmox_node TEXT DEFAULT NULL')
+
 
 # ---------------------------------------------------------------------------
 # Proxmox cluster CRUD

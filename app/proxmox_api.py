@@ -449,6 +449,7 @@ def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22, 
             'last_updated': None,
             'updated_needs': False,
             'ssh_host': c.get('primary_ip'),
+            'proxmox_node': c.get('node'),
             'ssh_port': ssh_port,
             'ssh_user': ssh_user,
             'snapshot_enabled': True,
@@ -576,3 +577,164 @@ def sync_default_group():
     # Convert set to list for JSON serialization
     result['removed'] = list(result['removed'])
     return result
+
+
+# ---------------------------------------------------------------------------
+# Proxmox snapshot helpers (create / rollback / delete)
+# ---------------------------------------------------------------------------
+
+
+def create_lxc_snapshot(node: str, vmid: str, snapshot_name: str) -> dict:
+    """Create a Proxmox LXC snapshot.
+
+    Args:
+        node: Proxmox node name (e.g. 'pve1').
+        vmid: Container VMID (integer or string).
+        snapshot_name: Name for the new snapshot.
+
+    Returns:
+        dict with 'success' (bool) and 'error' (str, if failed).
+    """
+    # Discover auth from first matching cluster in DB (heuristic — matches how
+    # the rest of this file resolves credentials without an explicit cluster arg).
+    try:
+        from .database import get_all_proxmox_clusters
+        clusters = get_all_proxmox_clusters()
+    except Exception:
+        clusters = []
+
+    if not clusters:
+        return {'success': False, 'error': 'No Proxmox clusters configured'}
+
+    for cluster in clusters:
+        try:
+            base_url = f'https://{cluster["host"]}:{cluster.get("port", 8006)}'
+            user = cluster.get('user', '') or ''
+            token_name = cluster.get('token_name', '') or ''
+            token_value = cluster.get('token_value', '') or ''
+            password = cluster.get('password', '') or ''
+            verify_ssl = bool(cluster.get('verify_ssl', False))
+
+            path = f'/nodes/{node}/lxc/{vmid}/snapshot/{snapshot_name}'
+            _api_request(
+                'PUT', base_url, user, token_name if token_name else (user if '!' in user else None),
+                token_value if token_value else None, verify_ssl, path,
+                data={'config': 'keep-all=1'} if password else None,
+            )
+            return {'success': True}
+        except Exception as e:
+            logger.debug(f"Snapshot create failed on cluster '{cluster.get('name', '?')}': {e}")
+            continue
+
+    return {'success': False, 'error': f'Could not connect to any configured cluster for snapshot creation'}
+
+
+def rollback_lxc_snapshot(node: str, vmid: str, snapshot_name: str) -> dict:
+    """Roll back an LXC container to a given snapshot.
+
+    Returns:
+        dict with 'success' (bool) and 'error' (str, if failed).
+    """
+    try:
+        from .database import get_all_proxmox_clusters
+        clusters = get_all_proxmox_clusters()
+    except Exception:
+        clusters = []
+
+    if not clusters:
+        return {'success': False, 'error': 'No Proxmox clusters configured'}
+
+    for cluster in clusters:
+        try:
+            base_url = f'https://{cluster["host"]}:{cluster.get("port", 8006)}'
+            user = cluster.get('user', '') or ''
+            token_name = cluster.get('token_name', '') or ''
+            token_value = cluster.get('token_value', '') or ''
+            password = cluster.get('password', '') or ''
+            verify_ssl = bool(cluster.get('verify_ssl', False))
+
+            path = f'/nodes/{node}/lxc/{vmid}/snapshot/{snapshot_name}/rollback'
+            _api_request(
+                'PUT', base_url, user, token_name if token_name else (user if '!' in user else None),
+                token_value if token_value else None, verify_ssl, path,
+                data=None,
+            )
+            return {'success': True}
+        except Exception as e:
+            logger.debug(f"Snapshot rollback failed on cluster '{cluster.get('name', '?')}': {e}")
+            continue
+
+    return {'success': False, 'error': f'Could not connect to any configured cluster for snapshot rollback'}
+
+
+def delete_lxc_snapshot(node: str, vmid: str, snapshot_name: str) -> dict:
+    """Delete a Proxmox LXC snapshot (cleanup after successful update)."""
+    try:
+        from .database import get_all_proxmox_clusters
+        clusters = get_all_proxmox_clusters()
+    except Exception:
+        clusters = []
+
+    if not clusters:
+        return {'success': False, 'error': 'No Proxmox clusters configured'}
+
+    for cluster in clusters:
+        try:
+            base_url = f'https://{cluster["host"]}:{cluster.get("port", 8006)}'
+            user = cluster.get('user', '') or ''
+            token_name = cluster.get('token_name', '') or ''
+            token_value = cluster.get('token_value', '') or ''
+            password = cluster.get('password', '') or ''
+            verify_ssl = bool(cluster.get('verify_ssl', False))
+
+            path = f'/nodes/{node}/lxc/{vmid}/snapshot/{snapshot_name}'
+            _api_request(
+                'DELETE', base_url, user, token_name if token_name else (user if '!' in user else None),
+                token_value if token_value else None, verify_ssl, path,
+            )
+            return {'success': True}
+        except Exception as e:
+            logger.debug(f"Snapshot delete failed on cluster '{cluster.get('name', '?')}': {e}")
+            continue
+
+    return {'success': False, 'error': f'Could not connect to any configured cluster for snapshot deletion'}
+
+
+def _find_node_for_container(container):
+    """Heuristic: find the Proxmox node name for a container.
+
+    Strategy: check stored clusters and match by ssh_host IP against discovered IPs.
+    Falls back to proxmox_vmid if set but node is not, then falls back to proxmox_node.
+
+    Returns:
+        (node_name, vmid) tuple or (None, None).
+    """
+    try:
+        from .database import get_all_proxmox_clusters
+        clusters = get_all_proxmox_clusters()
+    except Exception:
+        return None, None
+
+    # Try to match by SSH host IP against discovered IPs in known clusters
+    ssh_host = container.get('ssh_host') or ''
+    for cluster in clusters:
+        try:
+            discovered = discover_from_cluster(cluster)
+            for c in discovered:
+                if (str(c['container_id']) == str(container.get('container_id')) and
+                        c.get('primary_ip') == ssh_host):
+                    return c.get('node'), c['container_id']
+                # Also match by name
+                if c.get('name') == container.get('name'):
+                    return c.get('node'), c['container_id']
+        except Exception as e:
+            logger.debug(f"Cluster '{cluster.get('name', '?')}' discovery failed: {e}")
+            continue
+
+    # Fallback: use stored proxmox_node if available (from import)
+    node = container.get('proxmox_node')
+    vmid = container.get('container_id')
+    if node and vmid:
+        return str(node), str(vmid)
+
+    return None, None
