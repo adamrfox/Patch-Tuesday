@@ -1,0 +1,11 @@
+services:
+  patch-tuesday:
+    build: .
+    container_name: patch-tuesday
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=America/Los_Angeles

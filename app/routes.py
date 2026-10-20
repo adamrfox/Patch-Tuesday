@@ -8,7 +8,9 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       get_all_groups, get_group_by_id, save_group, delete_group,
                       get_group_members, get_all_groups_for_container,
                       add_group_member, remove_group_member,
-                      get_active_schedules, get_schedule_by_group)
+                      get_containers_not_in_group,
+                      get_active_schedules, get_schedule_by_group,
+                      get_db)
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
@@ -246,7 +248,8 @@ def create_group():
         if not name:
             return jsonify({'success': False, 'message': 'Group name is required'}), 400
         save_group({'name': name, 'description': data.get('description', '')})
-        gid = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+        db = get_db()
+        gid = db.execute('SELECT id FROM groups ORDER BY id DESC LIMIT 1').fetchone()[0]
         group = get_group_by_id(gid)
         return jsonify({'success': True, 'group': group})
     except Exception as e:
@@ -286,6 +289,31 @@ def group_add_member(group_id):
         return jsonify({'success': False, 'message': str(e)})
 
 
+@main.route('/groups/<int:group_id>/containers/available')
+def group_available_containers(group_id):
+    """Return containers not yet in this group."""
+    if not get_group_by_id(group_id):
+        return jsonify({'success': False, 'message': 'Group not found'}), 404
+    return jsonify({'success': True, 'containers': get_containers_not_in_group(group_id)})
+
+
+@main.route('/groups/<int:group_id>/members/batch', methods=['POST'])
+def group_add_multiple_members(group_id):
+    """Add multiple containers to a group in one call."""
+    if not get_group_by_id(group_id):
+        return jsonify({'success': False, 'message': 'Group not found'}), 404
+    data = request.get_json()
+    container_ids = data.get('container_ids', [])
+    added = []
+    for cid in container_ids:
+        try:
+            add_group_member(group_id, int(cid))
+            added.append(int(cid))
+        except Exception:
+            pass
+    return jsonify({'success': True, 'added': added})
+
+
 @main.route('/groups/<int:group_id>/members/<int:container_id>', methods=['DELETE'])
 def group_remove_member(group_id, container_id):
     """Remove a container from a group."""
@@ -318,6 +346,7 @@ def save_group_schedule(group_id):
     """Create or update the schedule for a group."""
     data = request.get_json()
     try:
+        db = get_db()
         existing = db.execute(
             'SELECT id FROM schedules WHERE group_id = ? AND enabled = 1 LIMIT 1', (group_id,)
         ).fetchone()
@@ -354,6 +383,7 @@ def save_group_schedule(group_id):
 def delete_group_schedule(group_id):
     """Delete the schedule assigned to a group."""
     try:
+        db = get_db()
         row = db.execute(
             'SELECT id FROM schedules WHERE group_id = ? LIMIT 1', (group_id,)
         ).fetchone()

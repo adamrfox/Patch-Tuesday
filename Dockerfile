@@ -17,9 +17,9 @@ RUN mkdir -p /app/app
 # Expose port
 EXPOSE 5000
 
-# Create a non-root user
-RUN adduser --disabled-password --gecos '' appuser
-USER appuser
+# Run as root (bind mount requires write access on the host path)
+# RUN adduser --disabled-password --gecos '' appuser
+# USER appuser
 
 # Run the application
 CMD ["python", "-m", "app"]

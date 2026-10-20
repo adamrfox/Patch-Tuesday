@@ -930,16 +930,18 @@
 
         function renderGroupMembers(groupId, members) {
             const el = document.getElementById(`group-members-${groupId}`);
-            if (!members || members.length === 0) {
-                el.innerHTML = '<p style="font-size:0.9em;color:#6c757d;">No members yet.</p>';
-                return;
+            let html = '';
+            if (members && members.length > 0) {
+                html += '<table><thead><tr><th>Name</th><th>ID</th><th>Action</th></tr></thead><tbody>';
+                members.forEach(m => {
+                    html += `<tr><td>${esc(m.name)}</td><td>${m.container_id}</td>`;
+                    html += `<td><button onclick="toggleGroupMember(${groupId}, ${m.id})" style="font-size:0.8em;padding:2px 8px;">Remove</button></td></tr>`;
+                });
+                html += '</tbody></table>';
+            } else {
+                html += '<p style="font-size:0.9em;color:#6c757d;">No members yet.</p>';
             }
-            let html = '<table><thead><tr><th>Name</th><th>ID</th><th>Action</th></tr></thead><tbody>';
-            members.forEach(m => {
-                html += `<tr><td>${esc(m.name)}</td><td>${m.container_id}</td>`;
-                html += `<td><button onclick="toggleGroupMember(${groupId}, ${m.id})" style="font-size:0.8em;padding:2px 8px;">Remove</button></td></tr>`;
-            });
-            html += '</tbody></table>';
+            html += `<button onclick="openAddMemberModal(${groupId})" style="margin-top:8px;font-size:0.9em;">+ Add member</button>`;
             el.innerHTML = html;
         }
 
@@ -947,7 +949,7 @@
             const el = document.getElementById(`group-schedule-${groupId}`);
             if (!schedule) {
                 _currentGroupScheduleId = null;
-                el.innerHTML = '<button onclick="assignContainerToGroupPrompt(' + groupId + ')" style="margin-top:5px;">+ Add member</button>';
+                el.innerHTML = '<p style="font-size:0.9em;color:#6c757d;margin-top:5px;">No schedule yet.</p>';
                 return;
             }
             el.innerHTML = `<p style="margin:8px 0;"><strong>${schedule.schedule_type}</strong> at ${schedule.time_of_day || '?'} &nbsp;|&nbsp; Window: ${schedule.maintenance_window_start || 'none'}–${schedule.maintenance_window_end || 'none'} &nbsp;|&nbsp; <em>${schedule.enabled ? 'Enabled' : 'Disabled'}</em></p>`;
@@ -983,6 +985,139 @@
             })
             .catch(() => alert('Error creating group'));
         });
+
+        function assignContainerToGroupPrompt(groupId) {
+            // legacy handler for button in schedule section — delegates to modal
+            openAddMemberModal(groupId);
+        }
+
+        let _addMemberModal = null;
+
+        function openAddMemberModal(groupId) {
+            if (_addMemberModal) { document.body.removeChild(_addMemberModal); _addMemberModal = null; }
+
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:999;display:flex;align-items:center;justify-content:center;';
+
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#fff;border-radius:8px;padding:20px;width:min(92vw,340px);max-height:70vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.25);';
+            box.style.overflowX = 'hidden';
+
+            const boxContent = document.createElement('div');
+            boxContent.style.cssText = 'overflow-y:auto;width:100%;flex-shrink:1;';
+            boxContent.style.overflowX = 'hidden';
+
+            // Title
+            const title = document.createElement('h3');
+            title.style.cssText = 'margin:0 0 16px;font-size:1.1em;';
+            title.textContent = 'Add members to this group';
+            boxContent.appendChild(title);
+
+            // List area
+            const listDiv = document.createElement('div');
+            listDiv.id = 'add-member-list-' + groupId;
+            listDiv.style.cssText = 'flex:1 1 0;overflow-y:auto;border:1px solid #dee2e6;border-radius:4px;padding:0;width:100%;';
+            listDiv.innerHTML = '<p style="text-align:center;color:#6c757d;">Loading…</p>';
+
+            // Action buttons row
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+            const addBtn = document.createElement('button');
+            addBtn.className = 'btn-success';
+            addBtn.style.cssText = 'padding:6px 16px;font-size:.9em;';
+            addBtn.textContent = 'Add selected';
+            addBtn.onclick = function() { addSelectedMembers(groupId); };
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.style.cssText = 'padding:6px 16px;font-size:.9em;border:1px solid #ccc;background:#f8f9fa;border-radius:4px;cursor:pointer;color:#333;font-weight:500;';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = function() { closeAddMemberModal(); };
+
+            actions.appendChild(addBtn);
+            actions.appendChild(cancelBtn);
+            boxContent.appendChild(listDiv);
+            boxContent.appendChild(actions);
+            box.appendChild(boxContent);
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+
+            // Close on overlay click
+            overlay.addEventListener('click', function(e) { if (e.target === overlay) closeAddMemberModal(); });
+
+            // Fetch available containers via API
+            fetch(`/groups/${groupId}/containers/available`)
+                .then(r => r.json())
+                .then(data => {
+                    console.log('openAddMemberModal groupId=' + groupId, data);
+                    if (!data.success || !data.containers.length) {
+                        listDiv.innerHTML = '<p style="text-align:center;color:#6c757d;">All containers are already in this group.</p>';
+                        return;
+                    }
+                    // "Select all" row — first <tr> in the table, same column widths
+                    let html = '<table style="width:100%;border-collapse:collapse;margin:4px 0;"><colgroup><col style="width:24px"><col></colgroup>';
+                    html += '<tr><td style="padding:4px 6px;"><input type="checkbox" class="add-member-select-all" data-group="' + groupId + '"></td><td style="padding:4px 6px;">Select all</td></tr>';
+                    data.containers.forEach(c => {
+                        const display = c.name && c.name.trim() ? c.name : 'Container ' + c.id;
+                        const extra = c.status ? '· ' + c.status : '';
+                        const idStr = c.container_id || c.id;
+                        html += '<tr>';
+                        html += '<td style="padding:4px 6px;"><input type="checkbox" class="add-member-cb" value="' + c.id + '" data-name="' + esc(display) + '"></td>';
+                        html += '<td style="padding:4px 6px;">';
+                        if (c.name && c.name.trim()) {
+                            html += '<span style="font-weight:500;">' + esc(display);
+                            html += ' <span style="color:#6c757d;" title="' + esc(idStr) + (extra ? ' ' + esc(extra) : '') + '">' + esc('(' + idStr + ')') + (extra ? ' ' + esc(extra) : '') + '</span>';
+                            html += '</span>';
+                        } else {
+                            html += '<span>' + esc(display);
+                            if (extra) html += ' <span style="color:#6c757d;">' + esc(extra) + '</span>';
+                            html += '</span>';
+                        }
+                        html += '</td></tr>';
+                    });
+                    html += '</table>';
+
+                    listDiv.innerHTML = html;
+
+                    // Wire up the "Select all" checkbox
+                    const selAllCb = listDiv.querySelector('.add-member-select-all');
+                    if (selAllCb) {
+                        selAllCb.addEventListener('change', function() {
+                            listDiv.querySelectorAll('.add-member-cb').forEach(cb => {
+                                cb.checked = this.checked;
+                            });
+                        });
+                    }
+                })
+                .catch(err => {
+                    console.error('openAddMemberModal fetch error:', err);
+                    listDiv.innerHTML = '<p style="text-align:center;color:#dc3545;">Failed to load containers.</p>';
+                });
+
+            _addMemberModal = overlay;
+        }
+
+        function closeAddMemberModal() {
+            if (_addMemberModal) { document.body.removeChild(_addMemberModal); _addMemberModal = null; }
+        }
+
+        function addSelectedMembers(groupId) {
+            const checks = document.querySelectorAll(`#add-member-list-${groupId} .add-member-cb:checked`);
+            if (!checks.length) { alert('Select at least one container.'); return; }
+            const ids = Array.from(checks).map(c => parseInt(c.value));
+            closeAddMemberModal();
+
+            fetch(`/groups/${groupId}/members/batch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ container_ids: ids })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) loadGroups();
+                else alert('Error: ' + (data.message || ''));
+            })
+            .catch(() => { alert('Error adding members'); loadGroups(); });
+        }
 
         function deleteGroup(id) {
             if (!confirm('Delete this group? Members will be unaffected.')) return;
