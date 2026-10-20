@@ -535,6 +535,8 @@
                     </div>
                     <button type="submit">Save</button>
                     <span id="defaultSshUserMsg" style="margin-left:10px;font-weight:bold;"></span>
+                    <br>
+                    <span id="defaultSshUserCurrent" style="color:#6c757d;font-size:0.85em;"></span>
                 </form>
             </div>
         </div>
@@ -1393,10 +1395,11 @@
         // Load groups when switching to Groups tab — also refresh schedules
         const _origSwitchTab = switchTab;
         switchTab = function(tabName) {
+            // Refresh default SSH user on every tab switch so all tabs stay in sync
+            loadDefaultSshUser();
             _origSwitchTab.call(this, tabName);
             if (tabName === 'groups') loadGroups();
             if (tabName === 'scheduling') updateActiveSchedulesTable();
-            if (tabName === 'settings') loadDefaultSshUser();
         };
 
         // -----------------------------------------------------------------------
@@ -1417,6 +1420,9 @@
                     if (addField) addField.value = _cachedDefaultSshUser;
                     const hint = document.getElementById('discoverySshHint');
                     if (hint) hint.textContent = `— default is "${_cachedDefaultSshUser}"`;
+                    // Persistent indicator in Settings so user always sees the current value
+                    const currentHint = document.getElementById('defaultSshUserCurrent');
+                    if (currentHint) currentHint.textContent = `Currently: ${_cachedDefaultSshUser}`;
                 })
                 .catch(() => { /* ignore — defaults will be used */ });
         }
@@ -1436,9 +1442,16 @@
                 if (data.success) {
                     _cachedDefaultSshUser = val;
                     msg.style.color = 'green';
-                    msg.textContent = 'Saved.';
+                    msg.textContent = `Saved as "${val}".`;
+                    // Update visible fields immediately so user sees the change right away
+                    document.getElementById('default_ssh_user').value = val;
+                    const addField = document.getElementById('ssh_user');
+                    if (addField) addField.value = val;
                     const hint = document.getElementById('discoverySshHint');
                     if (hint) hint.textContent = `— default is "${val}"`;
+                    // Persistent "Currently: ..." hint in Settings so the value always shows
+                    const currentHint = document.getElementById('defaultSshUserCurrent');
+                    if (currentHint) currentHint.textContent = `Currently: ${val}`;
                     setTimeout(() => { msg.textContent = ''; }, 3000);
                 } else {
                     msg.style.color = 'red';
