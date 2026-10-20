@@ -51,7 +51,16 @@ class PatchEngine:
     """Handles patching operations on containers"""
 
     def __init__(self):
-        pass
+        self._active = set()
+
+    def register_start(self, container_id):
+        self._active.add(container_id)
+
+    def register_done(self, container_id):
+        self._active.discard(container_id)
+
+    def is_running(self, container_id):
+        return container_id in self._active
 
     def execute_ssh_command(self, host, port, user, command, timeout=300, private_key_path=None):
         """Execute a command via SSH and return its exit code.
@@ -191,6 +200,7 @@ class PatchEngine:
         if not container['ssh_host']:
             return {'error': 'No SSH host configured'}
 
+        self.register_start(container_id)
         start_time = datetime.now()
         packages_updated = []
         error_message = ""
@@ -261,6 +271,7 @@ class PatchEngine:
                     'output': result['output'],
                     'error_message': error_message,
                 })
+                self.register_done(container_id)
                 return {
                     'success': False,
                     'error': error_message,
@@ -299,6 +310,7 @@ class PatchEngine:
                     'output': result['output'],
                     'error_message': error_message,
                 })
+                self.register_done(container_id)
                 return {
                     'success': False,
                     'error': error_message,
@@ -337,6 +349,7 @@ class PatchEngine:
                         delete_lxc_snapshot(proxmox_node, proxmox_vmid, snapshot_name)
                     except Exception as e:
                         logger.warning(f"Could not clean up snapshot {snapshot_name}: {e}")
+                self.register_done(container_id)
                 return {
                     'success': True,
                     'start_time': start_time,
@@ -390,6 +403,7 @@ class PatchEngine:
                     except Exception as e:
                         logger.error(f"Rollback exception for {container['name']}: {e}")
 
+                self.register_done(container_id)
                 return {
                     'success': False,
                     'error': error_message,
@@ -424,6 +438,7 @@ class PatchEngine:
             })
 
             logger.info(f"Successfully applied patches to {container['name']} ({len(packages_updated)} package(s))")
+            self.register_done(container_id)
             return {
                 'success': True,
                 'start_time': start_time,
@@ -447,6 +462,7 @@ class PatchEngine:
                 'error_message': error_message,
             })
 
+            self.register_done(container_id)
             return {
                 'success': False,
                 'error': error_message,

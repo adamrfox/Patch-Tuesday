@@ -137,7 +137,30 @@
             display: block;
         }
 
-        /* Discovery loading spinner */
+        /* Container status spinner */
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #ffc107;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .status-dot.running {
+            background-color: #ffc107;
+            animation: pulse 1s infinite;
+        }
+        .status-dot.updated {
+            background-color: #28a745;
+        }
+        .status-dot.never {
+            background-color: #6c757d;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
         #discoveryLoading {
             display: none;
             text-align: center;
@@ -244,24 +267,28 @@
             </div>
 
             <div class="card">
-                <h3>Managed Containers</h3>
+                <h3>Managed Containers
+                    <button id="refreshContainersBtn" type="button" onclick="loadContainerStatus()" style="float:right;font-size:0.85em;padding:4px 12px;background:#6c757d;" title="Refresh status">↻ Refresh</button>
+                </h3>
                 {% if containers %}
-                    <table>
+                    <table id="containersTable">
                         <thead>
                             <tr>
                                 <th>Name</th>
                                 <th>Container ID</th>
                                 <th>Status</th>
+                                <th>Last Updated</th>
                                 <th>SSH Host</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="containersTableBody">
                             {% for container in containers %}
-                            <tr>
+                            <tr class="container-row" data-id="{{ container.id }}">
                                 <td>{{ container.name }}</td>
                                 <td>{{ container.container_id }}</td>
-                                <td class="status-{{ container.status }}">{{ container.status.title() }}</td>
+                                <td class="status-cell status-{{ container.status }}">{{ container.status.title() }}</td>
+                                <td class="last-updated-cell"><span class="status-dot never"></span> —</td>
                                 <td>{{ container.ssh_host or 'N/A' }}</td>
                                 <td>
                                     <button onclick="patchContainer({{ container.id }})">Patch</button>
@@ -633,15 +660,26 @@
 
         function patchContainer(containerId) {
             if (confirm('Are you sure you want to patch this container?')) {
+                const row = document.querySelector(`.container-row[data-id="${containerId}"]`);
+                const statusCell = row ? row.querySelector('.status-cell') : null;
+                const updatedCell = row ? row.querySelector('.last-updated-cell') : null;
+
+                // Show in-progress indicator
+                if (updatedCell) updatedCell.innerHTML = '<span class="status-dot running"></span> Patching…';
+                if (statusCell) { statusCell.className = 'status-cell status-pending'; statusCell.textContent = 'Patching…'; }
+
                 fetch(`/patch/${containerId}`, { method: 'POST' })
                     .then(response => response.json())
                     .then(data => {
                         alert(`Patch result: ${data.success ? 'Success' : 'Failed'} - ${data.message || ''}`);
-                        location.reload();
+                        // Refresh status from server to pick up latest data
+                        loadContainerStatus();
                     })
                     .catch(error => {
                         console.error('Error:', error);
                         alert('Error occurred while patching container');
+                        // Reload to get fresh state
+                        location.reload();
                     });
             }
         }
@@ -660,6 +698,47 @@
                     });
             }
         }
+
+        function loadContainerStatus() {
+            fetch('/api/containers/status')
+                .then(response => response.json())
+                .then(data => {
+                    renderContainerStatus(data);
+                })
+                .catch(error => {
+                    console.error('Error loading container status:', error);
+                });
+        }
+
+        function renderContainerStatus(statuses) {
+            for (const s of statuses) {
+                const row = document.querySelector(`.container-row[data-id="${s.id}"]`);
+                if (!row) continue;
+
+                // Update status cell
+                const statusCell = row.querySelector('.status-cell');
+                statusCell.className = 'status-cell status-' + s.status;
+                statusCell.textContent = s.status.charAt(0).toUpperCase() + s.status.slice(1);
+
+                // Update last-updated cell
+                const updatedCell = row.querySelector('.last-updated-cell');
+                if (s.is_patching) {
+                    updatedCell.innerHTML = '<span class="status-dot running"></span> Patching…';
+                } else if (s.last_updated) {
+                    try {
+                        const d = new Date(s.last_updated);
+                        const formatted = d.toLocaleString();
+                        updatedCell.innerHTML = '<span class="status-dot updated"></span> ' + esc(formatted);
+                    } catch {
+                        updatedCell.innerHTML = '<span class="status-dot never"></span> —';
+                    }
+                } else {
+                    updatedCell.innerHTML = '<span class="status-dot never"></span> Never';
+                }
+            }
+        }
+
+        // Refresh container status whenever the Containers tab is shown
 
         function loadHistory() {
             const containerId = document.getElementById('historyContainerSelect').value;
@@ -1681,6 +1760,7 @@
             loadDefaultSshUser();
             _origSwitchTab.call(this, tabName);
             if (tabName === 'groups') loadGroups();
+            if (tabName === 'containers') loadContainerStatus();
             if (tabName === 'scheduling') updateActiveSchedulesTable();
         };
 
@@ -1756,6 +1836,7 @@
         // Load default SSH user and hint on page load
         loadDefaultSshUser();
         loadClusters();
+        loadContainerStatus();
         loadDiscoverySettings();
 
     </script>

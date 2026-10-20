@@ -18,8 +18,6 @@ from .database import (get_all_containers, get_container_by_id, save_container,
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
-
-# Create blueprint for routes
 main = Blueprint('main', __name__)
 
 
@@ -117,6 +115,41 @@ def patch_container(container_id):
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Container live status (is patching? when was last update?)
+# ---------------------------------------------------------------------------
+
+@main.route('/api/containers/status')
+def containers_status():
+    """Return per-container status: last_successful_update and is_patching."""
+    from .database import get_db as _get_db
+    from datetime import datetime as _dt
+
+    db = _get_db()
+    rows = db.execute(
+        "SELECT c.id, c.name, c.container_id, c.status, c.last_updated "
+        "FROM containers c ORDER BY c.name"
+    ).fetchall()
+    result = []
+    for row in rows:
+        cid = row['id']
+        latest = db.execute(
+            'SELECT MAX(end_time) AS last_succ FROM update_history '
+            'WHERE container_id = ? AND status = ?',
+            (cid, 'success')
+        ).fetchone()
+        result.append({
+            'id': cid,
+            'name': row['name'],
+            'container_id': row['container_id'],
+            'status': row['status'],
+            'last_updated': latest['last_succ'] if latest and latest['last_succ'] else None,
+            'is_patching': patch_engine.is_running(cid),
+        })
+    return jsonify(result)
+
 
 @main.route('/history/<int:container_id>')
 def get_update_history(container_id):
