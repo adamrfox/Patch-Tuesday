@@ -12,6 +12,7 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       get_active_schedules, get_schedule_by_group,
                       get_db, get_default_schedule, save_default_schedule, delete_default_schedule,
                       get_default_ssh_user, set_default_ssh_user,
+                      get_discovery_config, set_discovery_config,
                       get_all_proxmox_clusters, get_proxmox_cluster_by_id,
                       save_proxmox_cluster, delete_proxmox_cluster)
 from .container_manager import container_manager
@@ -20,6 +21,21 @@ from .alerting import alerting_system
 
 # Create blueprint for routes
 main = Blueprint('main', __name__)
+
+
+# ---------------------------------------------------------------------------
+# Lazy cache for global discovery config (avoids DB hits on every request)
+# ---------------------------------------------------------------------------
+
+_discovery_cfg_cache = None
+
+
+def _get_global_config(key, default=False):
+    """Return a cached value from the global discovery config."""
+    global _discovery_cfg_cache
+    if _discovery_cfg_cache is None:
+        _discovery_cfg_cache = get_discovery_config()
+    return _discovery_cfg_cache.get(key, default)
 
 @main.route('/')
 def index():
@@ -182,9 +198,10 @@ def proxmox_discover():
             token_value=data.get('token_value'),
         )
 
-        # Filter out 172.x IPs if requested
+        # Apply global 172.x filter setting
+        ignore_172 = _get_global_config('ignore_172_networks', False)
         filtered_count = 0
-        if data.get('ignore_172'):
+        if ignore_172:
             before = len(discovered)
             discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
             filtered_count = before - len(discovered)
@@ -478,6 +495,29 @@ def save_default_ssh_user_route():
 
 
 # ---------------------------------------------------------------------------
+# Discovery settings API
+# ---------------------------------------------------------------------------
+
+@main.route('/discovery-settings', methods=['GET'])
+def get_discovery_settings_route():
+    """Return global discovery settings."""
+    return jsonify({'success': True, 'settings': get_discovery_config()})
+
+
+@main.route('/discovery-settings', methods=['POST'])
+def save_discovery_settings_route():
+    """Save global discovery settings."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'message': 'No data provided'}), 400
+    try:
+        set_discovery_config(data)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Proxmox cluster management routes
 # ---------------------------------------------------------------------------
 
@@ -555,8 +595,6 @@ def discover_all_clusters():
         from .proxmox_api import discover_from_cluster
         from .database import get_all_proxmox_clusters
 
-        data = request.get_json() or {}
-
         clusters = get_all_proxmox_clusters()
         if not clusters:
             return jsonify({'success': False, 'message': 'No Proxmox clusters configured'})
@@ -573,9 +611,10 @@ def discover_all_clusters():
             except Exception as e:
                 logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
 
-        # Filter out 172.x IPs if requested
+        # Filter out 172.x IPs if global setting is enabled
+        ignore_172 = _get_global_config('ignore_172_networks', False)
         filtered_count = 0
-        if data.get('ignore_172'):
+        if ignore_172:
             original = len(all_containers)
             all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
             filtered_count = original - len(all_containers)

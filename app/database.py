@@ -673,3 +673,22 @@ def get_default_ssh_user():
 def set_default_ssh_user(value):
     """Save the default SSH user."""
     set_configuration('default_ssh_user', value)
+
+
+# ---------------------------------------------------------------------------
+# Global discovery settings — stored as simple key-value pairs
+# ---------------------------------------------------------------------------
+
+def get_discovery_config():
+    """Return a dict of global discovery settings (key -> bool)."""
+    return {
+        'ignore_172_networks': get_configuration('discovery_ignore_172') == '1',
+    }
+
+
+def set_discovery_config(data):
+    """Save discovery config values. Pass {'ignore_172_networks': bool, ...}."""
+    if data.get('ignore_172_networks'):
+        set_configuration('discovery_ignore_172', '1')
+    else:
+        set_configuration('discovery_ignore_172', '0')

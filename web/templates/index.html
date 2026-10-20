@@ -560,11 +560,6 @@
                             <input type="checkbox" id="discovery_verify_ssl" name="verify_ssl" checked> Verify SSL
                         </label>
                     </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="discovery_ignore_172" checked> Ignore 172.x network IPs
-                        </label>
-                    </div>
                     <button type="submit">Discover Containers</button>
                 </form>
             </div>
@@ -621,6 +616,20 @@
                     <br>
                     <span id="defaultSshUserCurrent" style="color:#6c757d;font-size:0.85em;"></span>
                 </form>
+            </div>
+
+            <div class="card">
+                <h3>Discovery Preferences</h3>
+                <p>Global options applied during container discovery.</p>
+                <div style="margin-top:10px;">
+                    <label>
+                        <input type="checkbox" id="discovery_ignore_172_global"> Ignore 172.x private network IPs
+                    </label>
+                </div>
+                <div style="margin-top:10px;">
+                    <button type="button" onclick="saveDiscoverySettings()">Save</button>
+                    <span id="discoverySettingsMsg" style="margin-left:10px;font-weight:bold;"></span>
+                </div>
             </div>
         </div>
 
@@ -1187,12 +1196,7 @@
             btn.disabled = true;
             btn.textContent = 'Discovering…';
 
-            const ignore172 = document.getElementById('discovery_ignore_172')?.checked ?? false;
-            fetch('/proxmox/discover-all', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ignore_172: ignore172 })
-            })
+            fetch('/proxmox/discover-all', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     btn.disabled = false;
@@ -1246,6 +1250,44 @@
                     msgEl.style.color = '#dc3545';
                     msgEl.textContent = 'Error: ' + err.message;
                 });
+        }
+
+        // -----------------------------------------------------------------------
+        // Discovery settings
+        // -----------------------------------------------------------------------
+
+        function loadDiscoverySettings() {
+            fetch('/discovery-settings')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.settings) {
+                        document.getElementById('discovery_ignore_172_global').checked = !!data.settings.ignore_172_networks;
+                    }
+                });
+        }
+
+        function saveDiscoverySettings() {
+            const msgEl = document.getElementById('discoverySettingsMsg');
+            const val = document.getElementById('discovery_ignore_172_global').checked;
+            fetch('/discovery-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ignore_172_networks: val })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    msgEl.style.color = '#28a745';
+                    msgEl.textContent = 'Saved.';
+                } else {
+                    msgEl.style.color = '#dc3545';
+                    msgEl.textContent = 'Error: ' + data.message;
+                }
+            })
+            .catch(err => {
+                msgEl.style.color = '#dc3545';
+                msgEl.textContent = 'Error: ' + err.message;
+            });
         }
 
         // When importing containers, track which cluster_id to associate them with
@@ -1787,6 +1829,7 @@
         // Load default SSH user and hint on page load
         loadDefaultSshUser();
         loadClusters();
+        loadDiscoverySettings();
 
     </script>
 </body>
