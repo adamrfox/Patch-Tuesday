@@ -1192,8 +1192,10 @@
             .then(data => { if (data.success) loadGroups(); else alert('Error: ' + data.message); });
         }
 
-        // Group schedule form
-        document.getElementById('groupScheduleForm').addEventListener('submit', function(e) {
+        // Group schedule form — dynamically created per-group; use event delegation on the groupsList container
+        const _gsf = document.getElementById('groupScheduleForm');
+        if (_gsf) {
+            _gsf.addEventListener('submit', function(e) {
             e.preventDefault();
             const groupId = parseInt(document.getElementById('schedule_group').value);
             if (!groupId) { alert('Select a group.'); return; }
@@ -1228,57 +1230,9 @@
                 });
         }
 
-        // Default schedule form — load on page open, save on submit, clear on button click
-        function loadDefaultSchedule() {
-            fetch('/default-schedule')
-                .then(r => r.json())
-                .then(data => {
-                    if (!data.success || !data.schedule) return;
-                    const s = data.schedule;
-                    if (s.enabled) document.getElementById('dschedule_enabled').checked = true;
-                    if (s.schedule_type) document.getElementById('dschedule_type').value = s.schedule_type;
-                    if (s.time_of_day) document.getElementById('dtime_of_day').value = s.time_of_day;
-                    if (s.day_of_week != null) document.getElementById('dday_of_week').value = s.day_of_week;
-                    if (s.maintenance_window_start) document.getElementById('dmaintenance_start').value = s.maintenance_window_start;
-                    if (s.maintenance_window_end) document.getElementById('dmaintenance_end').value = s.maintenance_window_end;
-                })
-                .catch(() => console.error('Failed to load default schedule'));
-        }
-
-        function clearDefaultSchedule() {
-            if (!confirm('Remove the default schedule? Ungrouped containers will have no schedule.')) return;
-            fetch('/default-schedule', { method: 'DELETE' })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) { loadDefaultSchedule(); }
-                    else alert('Error: ' + data.message);
-                });
-        }
-
-        document.getElementById('defaultScheduleForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const enabled = document.getElementById('dschedule_enabled').checked;
-            if (!enabled) { alert('Enable default schedule first, or use Clear to remove.'); return; }
-            fetch('/default-schedule', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    enabled: true,
-                    schedule_type: document.getElementById('dschedule_type').value,
-                    time_of_day: document.getElementById('dtime_of_day').value,
-                    day_of_week: document.getElementById('dday_of_week').value,
-                    maintenance_window_start: document.getElementById('dmaintenance_start').value,
-                    maintenance_window_end: document.getElementById('dmaintenance_end').value,
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) alert('Default schedule saved.');
-                else alert('Error: ' + (data.message || ''));
-            });
-        });
-
-        document.getElementById('btnClearDefaultSchedule').addEventListener('click', clearDefaultSchedule);
+        // -----------------------------------------------------------------------
+        // Legacy default schedule code (removed in v1.8) — skip to avoid null ref
+        // -----------------------------------------------------------------------
 
         // -----------------------------------------------------------------------
         // Unified schedule form — routes to group, default, or individual endpoint
@@ -1409,11 +1363,14 @@
         let _cachedDefaultSshUser = null;
 
         function loadDefaultSshUser() {
+            console.log('[default-ssh-user] loadDefaultSshUser() called');
             fetch('/default-ssh-user')
                 .then(r => r.json())
                 .then(data => {
+                    console.log('[default-ssh-user] API returned:', data);
                     if (!data.success) return;
                     _cachedDefaultSshUser = data.ssh_user || 'root';
+                    console.log('[default-ssh-user] setting to:', _cachedDefaultSshUser);
                     document.getElementById('default_ssh_user').value = _cachedDefaultSshUser;
                     // Also set the individual add form's SSH user field
                     const addField = document.getElementById('ssh_user');
@@ -1424,46 +1381,49 @@
                     const currentHint = document.getElementById('defaultSshUserCurrent');
                     if (currentHint) currentHint.textContent = `Currently: ${_cachedDefaultSshUser}`;
                 })
-                .catch(() => { /* ignore — defaults will be used */ });
+                .catch(e => console.log('[default-ssh-user] fetch error:', e));
         }
 
-        document.getElementById('defaultSshUserForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const val = document.getElementById('default_ssh_user').value.trim();
-            if (!val) return;
-            fetch('/default-ssh-user', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ssh_user: val })
-            })
-            .then(r => r.json())
-            .then(data => {
-                const msg = document.getElementById('defaultSshUserMsg');
-                if (data.success) {
-                    _cachedDefaultSshUser = val;
-                    msg.style.color = 'green';
-                    msg.textContent = `Saved as "${val}".`;
-                    // Update visible fields immediately so user sees the change right away
-                    document.getElementById('default_ssh_user').value = val;
-                    const addField = document.getElementById('ssh_user');
-                    if (addField) addField.value = val;
-                    const hint = document.getElementById('discoverySshHint');
-                    if (hint) hint.textContent = `— default is "${val}"`;
-                    // Persistent "Currently: ..." hint in Settings so the value always shows
-                    const currentHint = document.getElementById('defaultSshUserCurrent');
-                    if (currentHint) currentHint.textContent = `Currently: ${val}`;
-                    setTimeout(() => { msg.textContent = ''; }, 3000);
-                } else {
+        const sshForm = document.getElementById('defaultSshUserForm');
+        if (sshForm) {
+            sshForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const val = document.getElementById('default_ssh_user').value.trim();
+                if (!val) return;
+                fetch('/default-ssh-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssh_user: val })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    const msg = document.getElementById('defaultSshUserMsg');
+                    if (data.success) {
+                        _cachedDefaultSshUser = val;
+                        msg.style.color = 'green';
+                        msg.textContent = `Saved as "${val}".`;
+                        // Update visible fields immediately so user sees the change right away
+                        document.getElementById('default_ssh_user').value = val;
+                        const addField = document.getElementById('ssh_user');
+                        if (addField) addField.value = val;
+                        const hint = document.getElementById('discoverySshHint');
+                        if (hint) hint.textContent = `— default is "${val}"`;
+                        // Persistent "Currently: ..." hint in Settings so the value always shows
+                        const currentHint = document.getElementById('defaultSshUserCurrent');
+                        if (currentHint) currentHint.textContent = `Currently: ${val}`;
+                        setTimeout(() => { msg.textContent = ''; }, 3000);
+                    } else {
+                        msg.style.color = 'red';
+                        msg.textContent = data.message || 'Failed to save.';
+                    }
+                })
+                .catch(() => {
+                    const msg = document.getElementById('defaultSshUserMsg');
                     msg.style.color = 'red';
-                    msg.textContent = data.message || 'Failed to save.';
-                }
-            })
-            .catch(() => {
-                const msg = document.getElementById('defaultSshUserMsg');
-                msg.style.color = 'red';
-                msg.textContent = 'Network error.';
+                    msg.textContent = 'Network error.';
+                });
             });
-        });
+        }
 
         // Load default SSH user and hint on page load
         loadDefaultSshUser();
