@@ -281,6 +281,49 @@
             <h2>Scheduling</h2>
 
             <div class="card">
+                <h3>Default Schedule (Ungrouped Containers)</h3>
+                <p>Apply a schedule to any container that isn't in a group and has no individual schedule.</p>
+                <form id="defaultScheduleForm">
+                    <div class="form-group">
+                        <label><input type="checkbox" id="dschedule_enabled" name="enabled"> Enable Default Schedule</label>
+                    </div>
+                    <div class="form-group">
+                        <label for="dschedule_type">Schedule Type:</label>
+                        <select id="dschedule_type" name="schedule_type">
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="dtime_of_day">Time of Day:</label>
+                        <input type="time" id="dtime_of_day" name="time_of_day">
+                    </div>
+                    <div class="form-group">
+                        <label for="dday_of_week">Day of Week (for weekly):</label>
+                        <select id="dday_of_week" name="day_of_week">
+                            <option value="1">Monday</option>
+                            <option value="2">Tuesday</option>
+                            <option value="3">Wednesday</option>
+                            <option value="4">Thursday</option>
+                            <option value="5">Friday</option>
+                            <option value="6">Saturday</option>
+                            <option value="0">Sunday</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="dmaintenance_start">Maintenance Window Start:</label>
+                        <input type="time" id="dmaintenance_start" name="maintenance_window_start">
+                    </div>
+                    <div class="form-group">
+                        <label for="dmaintenance_end">Maintenance Window End:</label>
+                        <input type="time" id="dmaintenance_end" name="maintenance_window_end">
+                    </div>
+                    <button type="submit">Save Default Schedule</button>
+                    <button type="button" id="btnClearDefaultSchedule" class="btn-danger" style="margin-left:10px;">Clear</button>
+                </form>
+            </div>
+
+            <div class="card">
                 <h3>Group Schedule</h3>
                 <p>Apply a schedule to an entire group of containers.</p>
                 <form id="groupScheduleForm">
@@ -397,7 +440,7 @@
                                 <td>{{ schedule.time_of_day }}</td>
                                 <td>{{ schedule.maintenance_window_start or 'N/A' }} - {{ schedule.maintenance_window_end or 'N/A' }}</td>
                                 <td>{{ 'Enabled' if schedule.enabled else 'Disabled' }}</td>
-                                <td>{{ schedule.schedule_source | default('individual') }}</td>
+                                <td>{{ schedule.schedule_source | replace('default', 'Default') if schedule.schedule_source else 'individual' }}</td>
                                 <td>
                                     <button onclick="toggleSchedule({{ schedule.id }})">Toggle</button>
                                     <button class="btn-danger" onclick="deleteSchedule({{ schedule.id }})">Delete</button>
@@ -1193,7 +1236,62 @@
                 });
         }
 
+        // Default schedule form — load on page open, save on submit, clear on button click
+        function loadDefaultSchedule() {
+            fetch('/default-schedule')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success || !data.schedule) return;
+                    const s = data.schedule;
+                    if (s.enabled) document.getElementById('dschedule_enabled').checked = true;
+                    if (s.schedule_type) document.getElementById('dschedule_type').value = s.schedule_type;
+                    if (s.time_of_day) document.getElementById('dtime_of_day').value = s.time_of_day;
+                    if (s.day_of_week != null) document.getElementById('dday_of_week').value = s.day_of_week;
+                    if (s.maintenance_window_start) document.getElementById('dmaintenance_start').value = s.maintenance_window_start;
+                    if (s.maintenance_window_end) document.getElementById('dmaintenance_end').value = s.maintenance_window_end;
+                })
+                .catch(() => console.error('Failed to load default schedule'));
+        }
+
+        function clearDefaultSchedule() {
+            if (!confirm('Remove the default schedule? Ungrouped containers will have no schedule.')) return;
+            fetch('/default-schedule', { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { loadDefaultSchedule(); }
+                    else alert('Error: ' + data.message);
+                });
+        }
+
+        document.getElementById('defaultScheduleForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const enabled = document.getElementById('dschedule_enabled').checked;
+            if (!enabled) { alert('Enable default schedule first, or use Clear to remove.'); return; }
+            fetch('/default-schedule', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled: true,
+                    schedule_type: document.getElementById('dschedule_type').value,
+                    time_of_day: document.getElementById('dtime_of_day').value,
+                    day_of_week: document.getElementById('dday_of_week').value,
+                    maintenance_window_start: document.getElementById('dmaintenance_start').value,
+                    maintenance_window_end: document.getElementById('dmaintenance_end').value,
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) alert('Default schedule saved.');
+                else alert('Error: ' + (data.message || ''));
+            });
+        });
+
+        document.getElementById('btnClearDefaultSchedule').addEventListener('click', clearDefaultSchedule);
+
         function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // Load default schedule on page open
+        loadDefaultSchedule();
 
         // Load groups when switching to Groups tab
         const _origSwitchTab = switchTab;

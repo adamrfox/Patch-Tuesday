@@ -10,7 +10,7 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       add_group_member, remove_group_member,
                       get_containers_not_in_group,
                       get_active_schedules, get_schedule_by_group,
-                      get_db)
+                      get_db, get_default_schedule, save_default_schedule, delete_default_schedule)
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
@@ -389,6 +389,40 @@ def delete_group_schedule(group_id):
         ).fetchone()
         if row:
             delete_schedule(row['id'])
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Default schedule API
+# ---------------------------------------------------------------------------
+
+@main.route('/default-schedule', methods=['GET'])
+def get_default_schedule_route():
+    """Return the current default schedule config."""
+    cfg = get_default_schedule()
+    return jsonify({'success': True, 'schedule': cfg or {}})
+
+
+@main.route('/default-schedule', methods=['POST'])
+def save_default_schedule_route():
+    """Save a new default schedule configuration."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'message': 'No data provided'}), 400
+    try:
+        save_default_schedule(data)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@main.route('/default-schedule', methods=['DELETE'])
+def delete_default_schedule_route():
+    """Remove the default schedule configuration."""
+    try:
+        delete_default_schedule()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})

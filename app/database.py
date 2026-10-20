@@ -381,6 +381,22 @@ def add_group_member(group_id, container_id):
     db.commit()
 
 
+def get_containers_not_in_group(group_id):
+    """Return containers that are not members of the given group."""
+    db = get_db()
+    rows = db.execute('''
+        SELECT c.id, c.name, c.container_id, c.status
+        FROM containers c
+        WHERE c.id NOT IN (
+            SELECT gm.container_id FROM group_members gm WHERE gm.group_id = ?
+        )
+        ORDER BY c.name
+    ''', (group_id,)).fetchall()
+
+    # Convert sqlite3.Row -> dict list for JSON serialization
+    return [dict(r) for r in rows]
+
+
 def remove_group_member(group_id, container_id):
     """Remove a container from a group."""
     db = get_db()
@@ -396,12 +412,14 @@ def remove_group_member(group_id, container_id):
 def get_active_schedules():
     """Return all effective schedules as a flat list of dicts.
 
-    Priority resolution: if a container has both an individual schedule and a
-    group schedule, only the individual one is emitted (more specific).
+    Priority resolution (highest → lowest):
+      1. Individual schedule on the container
+      2. Group schedule inherited from membership
+      3. Default schedule for ungrouped containers without an individual schedule
 
     Each dict mirrors the schedules table columns plus two extras:
-      - schedule_source: 'individual' or 'group'
-      - group_name: present for group schedules
+      - schedule_source: 'individual', 'group', or 'default'
+      - group_name: present for group schedules (or None)
     """
     db = get_db()
 
@@ -443,6 +461,32 @@ def get_active_schedules():
                 row['enabled'] = gs['enabled']
                 results.append(row)
 
+    # --- Default schedule (for ungrouped containers without an individual schedule) ---
+    default_cfg = get_default_schedule()
+    if default_cfg and default_cfg.get('enabled'):
+        # Find containers with no individual schedule AND not in any group
+        all_with_individual = ','.join(str(i) for i in individual_ids) or '0'
+        ungrouped_rows = db.execute('''
+            SELECT c.* FROM containers c
+            WHERE c.id NOT IN (SELECT gm.container_id FROM group_members gm)
+              AND c.id NOT IN ({})
+        '''.format(all_with_individual)).fetchall()
+
+        for container in ungrouped_rows:
+            row = {
+                'container_id': container['id'],
+                'container_name': container['name'],
+                'schedule_source': 'default',
+                'group_name': None,
+                'schedule_type': default_cfg.get('schedule_type', 'daily'),
+                'time_of_day': default_cfg.get('time_of_day'),
+                'day_of_week': int(default_cfg.get('day_of_week', 1)),
+                'enabled': default_cfg.get('enabled', True),
+                'maintenance_window_start': default_cfg.get('maintenance_window_start'),
+                'maintenance_window_end': default_cfg.get('maintenance_window_end'),
+            }
+            results.append(row)
+
     return results
 
 
@@ -453,3 +497,47 @@ def get_schedule_by_group(group_id):
         'SELECT * FROM schedules WHERE group_id = ? AND enabled = 1', (group_id,)
     ).fetchone()
     return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Default schedule — stored as JSON in the configuration table (key: default_schedule)
+# ---------------------------------------------------------------------------
+
+def get_default_schedule():
+    """Return the default schedule config dict, or None if not configured.
+
+    Structure::
+
+        {type: 'daily'|'weekly', time_of_day: 'HH:MM', day_of_week: int,
+         enabled: bool, maintenance_window_start|end: str}
+    """
+    value = get_configuration('default_schedule')
+    if not value:
+        return None
+    import json, os
+    try:
+        cfg = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    # Ensure boolean
+    cfg['enabled'] = bool(cfg.get('enabled', False))
+    return cfg
+
+
+def save_default_schedule(schedule_data):
+    """Save a default schedule config.  Pass the same fields as individual/group schedules."""
+    import json
+    entry = {
+        'schedule_type': schedule_data.get('schedule_type', 'daily'),
+        'time_of_day': schedule_data.get('time_of_day'),
+        'day_of_week': int(schedule_data.get('day_of_week', 1)),
+        'enabled': bool(schedule_data.get('enabled', True)),
+        'maintenance_window_start': schedule_data.get('maintenance_window_start'),
+        'maintenance_window_end': schedule_data.get('maintenance_window_end'),
+    }
+    set_configuration('default_schedule', json.dumps(entry))
+
+
+def delete_default_schedule():
+    """Remove the default schedule configuration."""
+    set_configuration('default_schedule', '')
