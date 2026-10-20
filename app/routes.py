@@ -203,6 +203,10 @@ def proxmox_discover():
         filtered_count = 0
         if ignore_172:
             before = len(discovered)
+            for c in discovered:
+                # Also clean secondary IPs from the all_ips list (displayed in the results table)
+                if c.get('all_ips'):
+                    c['all_ips'] = [ip for ip in c['all_ips'] if not ip.startswith('172.')]
             discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
             filtered_count = before - len(discovered)
 
@@ -615,9 +619,13 @@ def discover_all_clusters():
         ignore_172 = _get_global_config('ignore_172_networks', False)
         filtered_count = 0
         if ignore_172:
-            original = len(all_containers)
+            before = len(all_containers)
+            for c in all_containers:
+                # Also clean secondary IPs from the all_ips list (displayed in the results table)
+                if c.get('all_ips'):
+                    c['all_ips'] = [ip for ip in c['all_ips'] if not ip.startswith('172.')]
             all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
-            filtered_count = original - len(all_containers)
+            filtered_count = before - len(all_containers)
 
         return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters), 'filtered_172': filtered_count})
     except ValueError as e:
