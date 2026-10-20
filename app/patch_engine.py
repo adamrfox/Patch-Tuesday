@@ -130,8 +130,8 @@ class PatchEngine:
         if not container['ssh_host']:
             return {'error': 'No SSH host configured'}
 
-        # Execute apt update to refresh package lists
-        command = "apt-get update"
+        # Execute apt update to refresh package lists (requires sudo)
+        command = "sudo apt-get update"
         result = self.execute_ssh_command(
             container['ssh_host'],
             container['ssh_port'],
@@ -142,13 +142,14 @@ class PatchEngine:
         )
 
         if not result['success']:
-            # Save failure to DB even when just checking
-            error_msg = f"Failed to update package lists (exit code {result.get('exit_code', '?')}): {result['error']}"
+            # apt-get outputs errors to stdout too — combine both for visibility
+            detail = result['output'] or result['error']
+            error_msg = f"Failed to update package lists (exit code {result.get('exit_code', '?')}): {detail}"
             logger.error(error_msg)
             return {'error': error_msg, 'updates_available': 0}
 
         # Parse how many packages would be upgraded using the dry-run format
-        command = "apt-get --dry-run upgrade"
+        command = "sudo apt-get --dry-run upgrade"
         result = self.execute_ssh_command(
             container['ssh_host'],
             container['ssh_port'],
@@ -231,7 +232,7 @@ class PatchEngine:
             # Step 1: Update package lists
             # ---------------------------------------------------------------
             logger.info(f"Applying patches to {container['name']}")
-            command = "apt-get update"
+            command = "sudo apt-get update"
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -242,10 +243,12 @@ class PatchEngine:
             )
 
             if not result['success']:
+                # apt-get (and some tools) send warnings/errors to stdout — show both
+                detail = result['output'] or result['error']
                 error_message = (
                     f"Failed to update package lists "
                     f"(exit code {result.get('exit_code', '?')}): "
-                    f"{result['error']}"
+                    f"{detail}"
                 )
                 logger.error(error_message)
                 # Save failure to DB (was missing before — now fixed)
@@ -268,7 +271,7 @@ class PatchEngine:
             # ---------------------------------------------------------------
             # Step 2: Dry-run — check what would be upgraded
             # ---------------------------------------------------------------
-            command = "apt-get --dry-run upgrade"
+            command = "sudo apt-get --dry-run upgrade"
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -279,10 +282,12 @@ class PatchEngine:
             )
 
             if not result['success']:
+                # combine stdout + stderr for full apt output
+                detail = result['output'] or result['error']
                 error_message = (
                     f"Failed to check packages "
                     f"(exit code {result.get('exit_code', '?')}): "
-                    f"{result['error']}"
+                    f"{detail}"
                 )
                 logger.error(error_message)
                 save_update_history({
@@ -347,7 +352,7 @@ class PatchEngine:
             # ---------------------------------------------------------------
             # Step 3: Actually perform the upgrade
             # ---------------------------------------------------------------
-            command = "apt-get -y upgrade"
+            command = "sudo apt-get -y upgrade"
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -358,10 +363,11 @@ class PatchEngine:
             )
 
             if not result['success']:
+                detail = result['output'] or result['error']
                 error_message = (
                     f"Failed to apply upgrades "
                     f"(exit code {result.get('exit_code', '?')}): "
-                    f"{result['error']}"
+                    f"{detail}"
                 )
                 logger.error(error_message)
 
