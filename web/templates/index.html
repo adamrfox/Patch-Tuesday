@@ -998,13 +998,22 @@
                     <td>${esc(c.name)}</td>
                     <td>${esc(c.host)}:${c.port || 8006}</td>
                     <td>${c.token_value ? (c.token_value.startsWith('***') ? 'API Token' : 'Token') : (c.password ? 'Password' : '—')}</td>
-                    <td style="font-size:0.85em;color:#6c757d;">${c.created_at || '?'}</td>
+                    <td style="font-size:0.85em;color:#6c757d;">${localDate(c.created_at)}</td>
                     <td><button class="btn-primary" style="padding:2px 8px;font-size:0.8em;" onclick="editCluster(${c.id})">Edit</button>
                         <button class="btn-danger" style="padding:2px 8px;font-size:0.8em;" onclick="deleteCluster(${c.id})">Del</button></td>
                 </tr>`).join('');
         }
 
         function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+        function localDate(isoStr) {
+            if (!isoStr || isoStr === '?') return '?';
+            try {
+                return new Date(isoStr).toLocaleString();
+            } catch {
+                return isoStr;
+            }
+        }
 
         function toggleClusterForm() {
             const card = document.getElementById('clusterFormCard');
