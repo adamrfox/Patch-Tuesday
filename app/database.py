@@ -113,24 +113,27 @@ def init_db(app):
         db.commit()
 
 def get_container_by_id(container_id):
-    """Get container by ID"""
+    """Get container by ID.  Always returns a plain dict (not sqlite3.Row)."""
     db = get_db()
-    return db.execute('SELECT * FROM containers WHERE id = ?', (container_id,)).fetchone()
+    row = db.execute('SELECT * FROM containers WHERE id = ?', (container_id,)).fetchone()
+    return dict(row) if row else None
 
 def get_all_containers():
-    """Get all containers"""
+    """Get all containers.  Returns list of dicts."""
     db = get_db()
-    return db.execute('SELECT * FROM containers ORDER BY name').fetchall()
+    return [dict(r) for r in db.execute('SELECT * FROM containers ORDER BY name').fetchall()]
 
 def get_container_by_name(name):
-    """Get container by name"""
+    """Get container by name.  Always returns a plain dict (not sqlite3.Row)."""
     db = get_db()
-    return db.execute('SELECT * FROM containers WHERE name = ?', (name,)).fetchone()
+    row = db.execute('SELECT * FROM containers WHERE name = ?', (name,)).fetchone()
+    return dict(row) if row else None
 
 def get_container_by_cid(container_id):
-    """Get container by container ID"""
+    """Get container by container ID.  Always returns a plain dict."""
     db = get_db()
-    return db.execute('SELECT * FROM containers WHERE container_id = ?', (container_id,)).fetchone()
+    row = db.execute('SELECT * FROM containers WHERE container_id = ?', (container_id,)).fetchone()
+    return dict(row) if row else None
 
 def save_container(container_data):
     """Save or update a container"""
