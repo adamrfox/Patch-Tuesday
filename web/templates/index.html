@@ -560,6 +560,11 @@
                             <input type="checkbox" id="discovery_verify_ssl" name="verify_ssl" checked> Verify SSL
                         </label>
                     </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="discovery_ignore_172" checked> Ignore 172.x network IPs
+                        </label>
+                    </div>
                     <button type="submit">Discover Containers</button>
                 </form>
             </div>
@@ -806,6 +811,7 @@
             }
             // Convert boolean fields
             data.verify_ssl = document.getElementById('discovery_verify_ssl').checked;
+            data.ignore_172 = document.getElementById('discovery_ignore_172').checked;
 
             const loading = document.getElementById('discoveryLoading');
             loading.style.display = 'block';
@@ -1174,7 +1180,12 @@
             btn.disabled = true;
             btn.textContent = 'Discovering…';
 
-            fetch('/proxmox/discover-all', { method: 'POST' })
+            const ignore172 = document.getElementById('discovery_ignore_172')?.checked ?? false;
+            fetch('/proxmox/discover-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ignore_172: ignore172 })
+            })
                 .then(r => r.json())
                 .then(data => {
                     btn.disabled = false;

@@ -181,6 +181,11 @@ def proxmox_discover():
             token_name=data.get('token_name'),
             token_value=data.get('token_value'),
         )
+
+        # Filter out 172.x IPs if requested
+        if data.get('ignore_172'):
+            discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
+
         return jsonify({'success': True, 'containers': discovered})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -562,6 +567,10 @@ def discover_all_clusters():
                 logger.info(f"Discovered {len(containers)} container(s) from cluster '{cluster['name']}'")
             except Exception as e:
                 logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
+
+        # Filter out 172.x IPs if requested
+        if data.get('ignore_172'):
+            all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
 
         return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters)})
     except ValueError as e:
