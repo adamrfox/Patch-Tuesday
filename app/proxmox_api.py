@@ -706,9 +706,22 @@ def _find_node_for_container(container):
     Strategy: check stored clusters and match by ssh_host IP against discovered IPs.
     Falls back to proxmox_vmid if set but node is not, then falls back to proxmox_node.
 
+    Args:
+        container: dict or sqlite3.Row representing a container row.
+
     Returns:
         (node_name, vmid) tuple or (None, None).
     """
+    def _get(obj, key, default=None):
+        """Safely get an attribute from dict or sqlite3.Row."""
+        if hasattr(obj, 'get'):
+            return obj.get(key, default)
+        try:
+            val = obj[key]
+            return val if val is not None else default
+        except (KeyError, TypeError):
+            return default
+
     try:
         from .database import get_all_proxmox_clusters
         clusters = get_all_proxmox_clusters()
@@ -716,24 +729,24 @@ def _find_node_for_container(container):
         return None, None
 
     # Try to match by SSH host IP against discovered IPs in known clusters
-    ssh_host = container.get('ssh_host') or ''
+    ssh_host = _get(container, 'ssh_host') or ''
     for cluster in clusters:
         try:
             discovered = discover_from_cluster(cluster)
             for c in discovered:
-                if (str(c['container_id']) == str(container.get('container_id')) and
-                        c.get('primary_ip') == ssh_host):
-                    return c.get('node'), c['container_id']
+                if (str(_get(c, 'container_id')) == str(_get(container, 'container_id')) and
+                        _get(c, 'primary_ip') == ssh_host):
+                    return _get(c, 'node'), _get(c, 'container_id')
                 # Also match by name
-                if c.get('name') == container.get('name'):
-                    return c.get('node'), c['container_id']
+                if _get(c, 'name') == _get(container, 'name'):
+                    return _get(c, 'node'), _get(c, 'container_id')
         except Exception as e:
-            logger.debug(f"Cluster '{cluster.get('name', '?')}' discovery failed: {e}")
+            logger.debug(f"Cluster '{_get(cluster, 'name', '?')}' discovery failed: {e}")
             continue
 
     # Fallback: use stored proxmox_node if available (from import)
-    node = container.get('proxmox_node')
-    vmid = container.get('container_id')
+    node = _get(container, 'proxmox_node')
+    vmid = _get(container, 'container_id')
     if node and vmid:
         return str(node), str(vmid)
 

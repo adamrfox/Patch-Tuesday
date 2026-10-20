@@ -53,7 +53,7 @@ class PatchEngine:
     def __init__(self):
         pass
 
-    def execute_ssh_command(self, host, port, user, command, timeout=300):
+    def execute_ssh_command(self, host, port, user, command, timeout=300, private_key_path=None):
         """Execute a command via SSH and return its exit code.
 
         Returns:
@@ -66,7 +66,24 @@ class PatchEngine:
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(host, port=port, username=user, timeout=timeout)
+
+            # Build auth kwargs — prefer private key, fall back to default SSH keys
+            connect_kwargs = {'timeout': timeout}
+            if private_key_path:
+                connect_kwargs['key_filename'] = [private_key_path]
+            else:
+                # Try the host's default identity keys (midway user) and ssh-agent
+                import os as _os
+                home = _os.path.expanduser('~')
+                defaults = [
+                    f'{home}/.ssh/id_ed25519',
+                    f'{home}/.ssh/id_rsa',
+                    f'{home}/.ssh/id_ecdsa',
+                    f'{home}/.ssh/id_dsa',
+                ]
+                connect_kwargs['key_filename'] = [k for k in defaults if _os.path.exists(k)]
+
+            ssh.connect(host, port=port, username=user, **connect_kwargs)
 
             stdin, stdout, stderr = ssh.exec_command(command, get_pty=True)
 
@@ -117,7 +134,8 @@ class PatchEngine:
             container['ssh_port'],
             container['ssh_user'],
             command,
-            timeout=300
+            timeout=300,
+            private_key_path=container.get('ssh_private_key_path'),
         )
 
         if not result['success']:
@@ -180,10 +198,15 @@ class PatchEngine:
             snapshot_name = None
             proxmox_node = None
             proxmox_vmid = None
-            if snapshot_before and container.get('snapshot_enabled'):
+            if snapshot_before and container['snapshot_enabled']:
+                from .proxmox_api import (
+                    create_lxc_snapshot,
+                    delete_lxc_snapshot,
+                    rollback_lxc_snapshot,
+                    _find_node_for_container,
+                )
                 proxmox_node, proxmox_vmid = _find_node_for_container(container)
                 if proxmox_node:
-                    from .proxmox_api import create_lxc_snapshot
                     snapshot_name = f"ptu_{int(time.time())}"
                     snap_result = create_lxc_snapshot(
                         proxmox_node, proxmox_vmid, snapshot_name
@@ -211,7 +234,8 @@ class PatchEngine:
                 container['ssh_port'],
                 container['ssh_user'],
                 command,
-                timeout=300
+                timeout=300,
+                private_key_path=container.get('ssh_private_key_path'),
             )
 
             if not result['success']:
@@ -247,7 +271,8 @@ class PatchEngine:
                 container['ssh_port'],
                 container['ssh_user'],
                 command,
-                timeout=300
+                timeout=300,
+                private_key_path=container.get('ssh_private_key_path'),
             )
 
             if not result['success']:
@@ -325,7 +350,8 @@ class PatchEngine:
                 container['ssh_port'],
                 container['ssh_user'],
                 command,
-                timeout=600  # Longer timeout for upgrade operation
+                timeout=600,  # Longer timeout for upgrade operation
+                private_key_path=container.get('ssh_private_key_path'),
             )
 
             if not result['success']:

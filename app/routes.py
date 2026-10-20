@@ -77,7 +77,8 @@ def add_container():
             'ssh_host': data.get('ssh_host'),
             'ssh_port': int(data.get('ssh_port', 22)),
             'ssh_user': data.get('ssh_user', default_user),
-            'snapshot_enabled': True
+            'snapshot_enabled': True,
+            'ssh_private_key_path': data.get('ssh_private_key_path'),
         }
 
         save_container(container_data)

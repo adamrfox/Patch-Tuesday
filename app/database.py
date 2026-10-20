@@ -136,6 +136,8 @@ def save_container(container_data):
     """Save or update a container"""
     db = get_db()
 
+    private_key = container_data.get('ssh_private_key_path')
+
     if 'id' in container_data and container_data['id']:
         # Update existing
         cluster_id = container_data.get('last_cluster_id')
@@ -143,28 +145,29 @@ def save_container(container_data):
             UPDATE containers
             SET name=?, container_id=?, status=?, last_updated=?, updated_needs=?,
                 ssh_host=?, ssh_port=?, ssh_user=?, snapshot_enabled=?,
-                last_cluster_id=?, updated_at=CURRENT_TIMESTAMP
+                last_cluster_id=?, ssh_private_key_path=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=?
         ''', (
             container_data['name'], container_data['container_id'], container_data['status'],
             container_data.get('last_updated'), container_data.get('updated_needs'),
             container_data.get('ssh_host'), container_data.get('ssh_port'),
             container_data.get('ssh_user'), container_data.get('snapshot_enabled'),
-            cluster_id,
+            cluster_id, private_key,
             container_data['id']
         ))
     else:
         # Insert new
         db.execute('''
             INSERT INTO containers (name, container_id, status, last_updated, updated_needs,
-                                   ssh_host, ssh_port, ssh_user, snapshot_enabled, last_cluster_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   ssh_host, ssh_port, ssh_user, snapshot_enabled, last_cluster_id,
+                                   ssh_private_key_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             container_data['name'], container_data['container_id'], container_data['status'],
             container_data.get('last_updated'), container_data.get('updated_needs'),
             container_data.get('ssh_host'), container_data.get('ssh_port'),
             container_data.get('ssh_user'), container_data.get('snapshot_enabled'),
-            container_data.get('last_cluster_id')
+            container_data.get('last_cluster_id'), private_key
         ))
 
     db.commit()
@@ -332,6 +335,20 @@ def _ensure_proxmox_schema(db):
     cols = {row[1] for row in db.execute('PRAGMA table_info(containers)').fetchall()}
     if 'proxmox_node' not in cols:
         db.execute('ALTER TABLE containers ADD COLUMN proxmox_node TEXT DEFAULT NULL')
+
+    # 4) Add ssh_private_key_path column (needed for SSH auth)
+    cols = {row[1] for row in db.execute('PRAGMA table_info(containers)').fetchall()}
+    if 'ssh_private_key_path' not in cols:
+        db.execute('ALTER TABLE containers ADD COLUMN ssh_private_key_path TEXT DEFAULT NULL')
+
+    # Seed existing containers with the host's default SSH key (midway user)
+    import os
+    default_key = f'{os.path.expanduser("~")}/.ssh/id_ed25519'
+    if os.path.exists(default_key):
+        db.execute(
+            'UPDATE containers SET ssh_private_key_path=? WHERE ssh_private_key_path IS NULL',
+            (default_key,)
+        )
 
 
 # ---------------------------------------------------------------------------
