@@ -281,128 +281,41 @@
             <h2>Scheduling</h2>
 
             <div class="card">
-                <h3>Default Schedule (Ungrouped Containers)</h3>
-                <p>Apply a schedule to any container that isn't in a group and has no individual schedule.</p>
-                <form id="defaultScheduleForm">
+                <h3>Schedule</h3>
+                <p>Apply a schedule to either a group of containers or the default (ungrouped).</p>
+                <form id="scheduleForm">
                     <div class="form-group">
-                        <label><input type="checkbox" id="dschedule_enabled" name="enabled"> Enable Default Schedule</label>
-                    </div>
-                    <div class="form-group">
-                        <label for="dschedule_type">Schedule Type:</label>
-                        <select id="dschedule_type" name="schedule_type">
-                            <option value="daily">Daily</option>
-                            <option value="weekly">Weekly</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="dtime_of_day">Time of Day:</label>
-                        <input type="time" id="dtime_of_day" name="time_of_day">
-                    </div>
-                    <div class="form-group">
-                        <label for="dday_of_week">Day of Week (for weekly):</label>
-                        <select id="dday_of_week" name="day_of_week">
-                            <option value="1">Monday</option>
-                            <option value="2">Tuesday</option>
-                            <option value="3">Wednesday</option>
-                            <option value="4">Thursday</option>
-                            <option value="5">Friday</option>
-                            <option value="6">Saturday</option>
-                            <option value="0">Sunday</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="dmaintenance_start">Maintenance Window Start:</label>
-                        <input type="time" id="dmaintenance_start" name="maintenance_window_start">
-                    </div>
-                    <div class="form-group">
-                        <label for="dmaintenance_end">Maintenance Window End:</label>
-                        <input type="time" id="dmaintenance_end" name="maintenance_window_end">
-                    </div>
-                    <button type="submit">Save Default Schedule</button>
-                    <button type="button" id="btnClearDefaultSchedule" class="btn-danger" style="margin-left:10px;">Clear</button>
-                </form>
-            </div>
-
-            <div class="card">
-                <h3>Group Schedule</h3>
-                <p>Apply a schedule to an entire group of containers.</p>
-                <form id="groupScheduleForm">
-                    <div class="form-group">
-                        <label for="schedule_group">Group:</label>
-                        <select id="schedule_group" name="group_id">
-                            <option value="">— select a group —</option>
+                        <label for="schedule_scope">Scope:</label>
+                        <select id="schedule_scope" name="scope">
+                            <option value="">— target —</option>
+                            <option value="_default">Default (ungrouped containers)</option>
                             {% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="gschedule_type">Schedule Type:</label>
-                        <select id="gschedule_type" name="schedule_type">
-                            <option value="daily">Daily</option>
-                            <option value="weekly">Weekly</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="gtime_of_day">Time of Day:</label>
-                        <input type="time" id="gtime_of_day" name="time_of_day">
-                    </div>
-                    <div class="form-group">
-                        <label for="gday_of_week">Day of Week (for weekly):</label>
-                        <select id="gday_of_week" name="day_of_week">
-                            <option value="1">Monday</option>
-                            <option value="2">Tuesday</option>
-                            <option value="3">Wednesday</option>
-                            <option value="4">Thursday</option>
-                            <option value="5">Friday</option>
-                            <option value="6">Saturday</option>
-                            <option value="0">Sunday</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="gmaintenance_start">Maintenance Window Start:</label>
-                        <input type="time" id="gmaintenance_start" name="maintenance_window_start">
-                    </div>
-                    <div class="form-group">
-                        <label for="gmaintenance_end">Maintenance Window End:</label>
-                        <input type="time" id="gmaintenance_end" name="maintenance_window_end">
-                    </div>
-                    <button type="submit">Save Group Schedule</button>
-                    <button type="button" class="btn-danger" onclick="deleteGroupSchedule()" style="margin-left:10px;">Delete Group Schedule</button>
-                </form>
-            </div>
-
-            <div class="card">
-                <h3>Individual Container Schedule</h3>
-                <p>Set a schedule for a single container (overrides any group schedule for that container).</p>
-                <form id="scheduleForm">
-                    <div class="form-group">
-                        <label for="schedule_container">Container:</label>
-                        <select id="schedule_container" name="container_id" required>
-                            {% for container in containers %}
-                            <option value="{{ container.id }}">{{ container.name }}</option>
-                            {% endfor %}
-                        </select>
+                        <label><input type="checkbox" id="schedule_enabled"> Enable Schedule</label>
                     </div>
                     <div class="form-group">
                         <label for="schedule_type">Schedule Type:</label>
-                        <select id="schedule_type" name="schedule_type" required>
+                        <select id="schedule_type" name="schedule_type">
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
                         </select>
                     </div>
                     <div class="form-group">
                         <label for="time_of_day">Time of Day:</label>
-                        <input type="time" id="time_of_day" name="time_of_day" required>
+                        <input type="time" id="time_of_day" name="time_of_day">
                     </div>
                     <div class="form-group">
                         <label for="day_of_week">Day of Week (for weekly):</label>
                         <select id="day_of_week" name="day_of_week">
-                            <option value="0">Sunday</option>
                             <option value="1">Monday</option>
                             <option value="2">Tuesday</option>
                             <option value="3">Wednesday</option>
                             <option value="4">Thursday</option>
                             <option value="5">Friday</option>
                             <option value="6">Saturday</option>
+                            <option value="0">Sunday</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -414,6 +327,58 @@
                         <input type="time" id="maintenance_end" name="maintenance_window_end">
                     </div>
                     <button type="submit">Save Schedule</button>
+                    <button type="button" class="btn-danger" onclick="deleteCurrentSchedule()" style="margin-left:10px;">Clear</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Individual Container Schedule</h3>
+                <p>Set a schedule for a single container (overrides any group or default schedule for that container).</p>
+                <form id="individualScheduleForm">
+                    <div class="form-group">
+                        <label for="schedule_container2">Target Container:</label>
+                        <select id="schedule_container2" name="container_id" required>
+                            {% for container in containers %}
+                            <option value="{{ container.id }}">{{ container.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="individual_enabled"> Enable Schedule</label>
+                    </div>
+                    <div class="form-group">
+                        <label for="individual_schedule_type">Schedule Type:</label>
+                        <select id="individual_schedule_type" name="schedule_type">
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="individual_time_of_day">Time of Day:</label>
+                        <input type="time" id="individual_time_of_day" name="time_of_day">
+                    </div>
+                    <div class="form-group">
+                        <label for="individual_day_of_week">Day of Week (for weekly):</label>
+                        <select id="individual_day_of_week" name="day_of_week">
+                            <option value="1">Monday</option>
+                            <option value="2">Tuesday</option>
+                            <option value="3">Wednesday</option>
+                            <option value="4">Thursday</option>
+                            <option value="5">Friday</option>
+                            <option value="6">Saturday</option>
+                            <option value="0">Sunday</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="individual_maintenance_start">Maintenance Window Start:</label>
+                        <input type="time" id="individual_maintenance_start" name="maintenance_window_start">
+                    </div>
+                    <div class="form-group">
+                        <label for="individual_maintenance_end">Maintenance Window End:</label>
+                        <input type="time" id="individual_maintenance_end" name="maintenance_window_end">
+                    </div>
+                    <button type="submit" id="btnSaveIndividualSchedule">Save Individual Schedule</button>
+                    <button type="button" class="btn-danger" onclick="deleteIndividualSchedule()" style="margin-left:10px;">Clear</button>
                 </form>
             </div>
 
@@ -1288,16 +1253,124 @@
 
         document.getElementById('btnClearDefaultSchedule').addEventListener('click', clearDefaultSchedule);
 
+        // -----------------------------------------------------------------------
+        // Unified schedule form — routes to group, default, or individual endpoint
+        // -----------------------------------------------------------------------
+
+        function loadUnifiedSchedule() {
+            // Try to load the individual container schedule first (if one is selected)
+            const sel = document.getElementById('schedule_container');
+            if (sel && sel.value) {
+                fetch(`/schedule/container/${sel.value}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data && data.schedule) populateForm(data.schedule);
+                    })
+                    .catch(() => {});
+            }
+        }
+
+        function populateForm(sched) {
+            document.getElementById('schedule_enabled').checked = sched.enabled !== false;
+            if (sched.schedule_type) document.getElementById('schedule_type').value = sched.schedule_type;
+            if (sched.time_of_day) document.getElementById('time_of_day').value = sched.time_of_day;
+            if (sched.day_of_week != null) document.getElementById('day_of_week').value = sched.day_of_week;
+            if (sched.maintenance_window_start) document.getElementById('maintenance_start').value = sched.maintenance_window_start;
+            if (sched.maintenance_window_end) document.getElementById('maintenance_window_end').value = sched.maintenance_window_end;
+        }
+
+        // Scope picker — clear form fields when user changes target
+        document.getElementById('schedule_scope').addEventListener('change', function() {
+            if (this.value === '_default') loadDefaultSchedule();
+            else loadGroups();
+        });
+
+        // Save button handler
+        document.getElementById('scheduleForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const scope = document.getElementById('schedule_scope').value;
+            if (!scope || scope === '_default') {
+                // Route to default-schedule endpoint
+                const enabled = document.getElementById('schedule_enabled').checked;
+                if (!enabled && !confirm('Uncheck the schedule? This will remove the default schedule.')) return;
+                fetch('/default-schedule', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        enabled: true,
+                        schedule_type: document.getElementById('schedule_type').value,
+                        time_of_day: document.getElementById('time_of_day').value,
+                        day_of_week: parseInt(document.getElementById('day_of_week').value),
+                        maintenance_window_start: document.getElementById('maintenance_start').value,
+                        maintenance_window_end: document.getElementById('maintenance_window_end').value,
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { alert('Default schedule saved.'); }
+                    else alert('Error: ' + (data.message || ''));
+                });
+            } else {
+                // Real group — route to /groups/<id>/schedule
+                const gid = parseInt(scope);
+                fetch(`/groups/${gid}/schedule`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        schedule_type: document.getElementById('schedule_type').value,
+                        time_of_day: document.getElementById('time_of_day').value,
+                        day_of_week: parseInt(document.getElementById('day_of_week').value),
+                        maintenance_window_start: document.getElementById('maintenance_start').value,
+                        maintenance_window_end: document.getElementById('maintenance_window_end').value,
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { loadGroups(); alert('Group schedule saved.'); }
+                    else alert('Error: ' + (data.message || ''));
+                });
+            }
+        });
+
+        // Clear button handler — removes default or group schedule depending on current scope
+        function deleteCurrentSchedule() {
+            const scope = document.getElementById('schedule_scope').value;
+            if (!scope || scope === '_default') {
+                if (!confirm('Remove the default schedule? Ungrouped containers will have no schedule.')) return;
+                fetch('/default-schedule', { method: 'DELETE' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) alert('Default schedule removed.');
+                        else alert('Error: ' + (data.message || ''));
+                    });
+            } else {
+                const gid = parseInt(scope);
+                if (!gid) { alert('Select a group first.'); return; }
+                if (!confirm(`Delete the schedule for this group?`)) return;
+                fetch(`/schedule/group/${gid}`, { method: 'DELETE' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) { loadGroups(); alert('Schedule deleted.'); }
+                        else alert('Error: ' + data.message);
+                    });
+            }
+        }
+
+        // Legacy handlers kept for any remaining references
+        function deleteGroupSchedule() {
+            const gid = document.getElementById('schedule_scope').value;
+            if (!gid || gid === '_default') return;
+            deleteCurrentSchedule();
+        }
+
         function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-        // Load default schedule on page open
-        loadDefaultSchedule();
-
-        // Load groups when switching to Groups tab
+        // Load groups when switching to Groups tab — also refresh schedules
         const _origSwitchTab = switchTab;
         switchTab = function(tabName) {
             _origSwitchTab.call(this, tabName);
             if (tabName === 'groups') loadGroups();
+            if (tabName === 'scheduling') updateActiveSchedulesTable();
         };
 
     </script>
