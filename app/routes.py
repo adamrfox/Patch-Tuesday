@@ -11,7 +11,9 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       get_containers_not_in_group,
                       get_active_schedules, get_schedule_by_group,
                       get_db, get_default_schedule, save_default_schedule, delete_default_schedule,
-                      get_default_ssh_user, set_default_ssh_user)
+                      get_default_ssh_user, set_default_ssh_user,
+                      get_all_proxmox_clusters, get_proxmox_cluster_by_id,
+                      save_proxmox_cluster, delete_proxmox_cluster)
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
@@ -188,19 +190,30 @@ def proxmox_discover():
 
 @main.route('/proxmox/import', methods=['POST'])
 def proxmox_import():
-    """Import selected containers from a Proxmox cluster into the database."""
+    """Import selected containers from a Proxmox cluster into the database.
+
+    Accepts inline auth params OR a stored cluster_id for credential lookup.
+    """
     data = request.get_json()
 
     try:
-        discovered = container_manager.discover_containers_from_proxmox(
-            proxmox_host=data['host'],
-            proxmox_user=data.get('user'),
-            proxmox_password=data.get('password'),
-            proxmox_port=int(data.get('port', 8006)),
-            verify_ssl=bool(data.get('verify_ssl', True)),
-            token_name=data.get('token_name'),
-            token_value=data.get('token_value'),
-        )
+        # If cluster_id is provided, discover from that stored cluster
+        cluster_id = data.get('cluster_id')
+        if cluster_id:
+            cluster = get_proxmox_cluster_by_id(cluster_id)
+            if not cluster:
+                return jsonify({'success': False, 'message': f'Cluster {cluster_id} not found'}), 404
+            discovered = container_manager.discover_from_cluster(cluster)
+        else:
+            discovered = container_manager.discover_containers_from_proxmox(
+                proxmox_host=data['host'],
+                proxmox_user=data.get('user'),
+                proxmox_password=data.get('password'),
+                proxmox_port=int(data.get('port', 8006)),
+                verify_ssl=bool(data.get('verify_ssl', True)),
+                token_name=data.get('token_name'),
+                token_value=data.get('token_value'),
+            )
 
         if not discovered:
             return jsonify({'success': False, 'message': 'No containers discovered'})
@@ -218,6 +231,7 @@ def proxmox_import():
             to_import,
             ssh_user=data.get('ssh_user', default_user),
             ssh_port=int(data.get('ssh_port', 22)),
+            cluster_id=cluster_id,
         )
 
         return jsonify({
@@ -453,3 +467,133 @@ def save_default_ssh_user_route():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Proxmox cluster management routes
+# ---------------------------------------------------------------------------
+
+@main.route('/proxmox/clusters', methods=['GET'])
+def list_proxmox_clusters():
+    """Return all configured Proxmox clusters."""
+    clusters = get_all_proxmox_clusters()
+    # Mask credentials in the response
+    for c in clusters:
+        if c.get('token_value'):
+            c['token_value'] = '***' + c['token_value'][-4:]
+        if c.get('password'):
+            c['password'] = '***'
+    return jsonify({'success': True, 'clusters': clusters})
+
+
+@main.route('/proxmox/clusters', methods=['POST'])
+def save_proxmox_cluster_route():
+    """Create or update a Proxmox cluster definition."""
+    data = request.get_json()
+    try:
+        name = data['name'].strip()
+        host = data['host'].strip()
+        if not name or not host:
+            return jsonify({'success': False, 'message': 'name and host are required'}), 400
+        save_proxmox_cluster({
+            'id': data.get('id'),
+            'name': name,
+            'host': host,
+            'port': int(data.get('port', 8006)),
+            'user': data.get('user', ''),
+            'token_name': data.get('token_name', ''),
+            'token_value': data.get('token_value', ''),
+            'password': data.get('password', ''),
+            'verify_ssl': data.get('verify_ssl', False),
+        })
+        # Get the saved cluster (mask credentials)
+        cluster_id = data.get('id')
+        if cluster_id:
+            cluster = get_proxmox_cluster_by_id(cluster_id)
+        else:
+            cluster = get_all_proxmox_clusters()[-1]  # last inserted
+        if cluster and cluster.get('token_value'):
+            cluster['token_value'] = '***' + cluster['token_value'][-4:]
+        if cluster and cluster.get('password'):
+            cluster['password'] = '***'
+        return jsonify({'success': True, 'cluster': cluster})
+    except Exception as e:
+        if 'UNIQUE constraint failed' in str(e):
+            return jsonify({'success': False, 'message': f'Cluster "{name}" already exists'}), 409
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@main.route('/proxmox/clusters/<int:cluster_id>', methods=['DELETE'])
+def delete_proxmox_cluster_route(cluster_id):
+    """Delete a Proxmox cluster definition."""
+    try:
+        delete_proxmox_cluster(cluster_id)
+        return jsonify({'success': True, 'message': 'Cluster deleted'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Discover from all clusters
+# ---------------------------------------------------------------------------
+
+@main.route('/proxmox/discover-all', methods=['POST'])
+def discover_all_clusters():
+    """Discover containers from all configured Proxmox clusters."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        from .proxmox_api import discover_from_cluster
+        from .database import get_all_proxmox_clusters
+
+        clusters = get_all_proxmox_clusters()
+        if not clusters:
+            return jsonify({'success': False, 'message': 'No Proxmox clusters configured'})
+
+        all_containers = []
+        for cluster in clusters:
+            try:
+                containers = discover_from_cluster(cluster)
+                for c in containers:
+                    c['cluster_id'] = cluster['id']
+                    c['cluster_name'] = cluster['name']
+                all_containers.extend(containers)
+                logger.info(f"Discovered {len(containers)} container(s) from cluster '{cluster['name']}'")
+            except Exception as e:
+                logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
+
+        return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters)})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Sync default group with cluster state
+# ---------------------------------------------------------------------------
+
+@main.route('/proxmox/sync-default-group', methods=['POST'])
+def sync_default_group_route():
+    """Sync the default group membership with current cluster container state.
+
+    - Adds new running containers to the default group
+    - Removes containers that no longer exist on any configured cluster
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        from .proxmox_api import sync_default_group
+        result = sync_default_group()
+        return jsonify({
+            'success': True,
+            'added': result['added'],
+            'removed': result['removed'],
+            'skipped_not_running': result['skipped_not_running'],
+            'errors': result['errors'],
+        })
+    except Exception as e:
+        logger.error(f"Error syncing default group: {e}")
+        return jsonify({'success': False, 'message': str(e)})

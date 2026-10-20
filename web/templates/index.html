@@ -296,6 +296,10 @@
                     <div class="form-group">
                         <label><input type="checkbox" id="schedule_enabled"> Enable Schedule</label>
                     </div>
+                    <!-- Auto-sync only shown for default scope -->
+                    <div class="form-group" id="autoSyncGroup" style="display:none;">
+                        <label><input type="checkbox" id="schedule_auto_sync"> Sync from configured Proxmox clusters before patches</label>
+                    </div>
                     <div class="form-group">
                         <label for="schedule_type">Schedule Type:</label>
                         <select id="schedule_type" name="schedule_type">
@@ -450,6 +454,80 @@
         <div id="discovery" class="tab-content">
             <h2>Proxmox Discovery</h2>
 
+            <!-- Cluster Management Card -->
+            <div class="card">
+                <h3>Configured Clusters</h3>
+                <p>Save Proxmox cluster definitions here for one-click discovery and auto-sync.</p>
+                <button id="addClusterBtn" class="btn-primary" onclick="toggleClusterForm()" style="margin-bottom:15px;">+ Add Cluster</button>
+
+                <!-- Add/Edit Cluster Form (hidden by default) -->
+                <div id="clusterFormCard" style="display:none;margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px;">
+                    <h4 id="clusterFormTitle">Add Cluster</h4>
+                    <form id="clusterForm">
+                        <input type="hidden" id="cluster_edit_id" value="">
+                        <div class="form-group" style="display:flex;gap:10px;">
+                            <div style="flex:1;"><label for="cluster_name">Name:</label>
+                                <input type="text" id="cluster_name" placeholder="e.g. Production"></div>
+                            <div style="flex:2;"><label for="cluster_host">Host:</label>
+                                <input type="text" id="cluster_host" placeholder="192.168.86.19 or cluster hostname" required></div>
+                        </div>
+                        <div class="form-group" style="display:flex;gap:10px;">
+                            <div style="flex:1;"><label for="cluster_user">User:</label>
+                                <input type="text" id="cluster_user" placeholder="root@pam" value="root@pam"></div>
+                            <div style="flex:1;"><label for="cluster_port">Port:</label>
+                                <input type="number" id="cluster_port" value="8006"></div>
+                        </div>
+                        <!-- Auth method toggle -->
+                        <div class="form-group" style="display:flex;gap:20px;margin-bottom:10px;">
+                            <label for="cluster_auth_method">Authentication:</label>
+                            <span style="display:inline-flex;align-items:center;gap:6px;">
+                                <input type="radio" name="auth_method" value="token" id="cluster_auth_radio_token" checked onchange="toggleAuthFields()">
+                                API Token
+                            </span>
+                            <span style="display:inline-flex;align-items:center;gap:6px;">
+                                <input type="radio" name="auth_method" value="password" id="cluster_auth_radio_password" onchange="toggleAuthFields()">
+                                Password
+                            </span>
+                        </div>
+                        <!-- API Token fields -->
+                        <div id="clusterTokenFields">
+                            <div class="form-group" style="display:flex;gap:10px;">
+                                <div style="flex:1;"><label for="cluster_token_name">Token Name:</label>
+                                    <input type="text" id="cluster_token_name" placeholder="patchtuesday"></div>
+                                <div style="flex:2;"><label for="cluster_token_value">Token Secret:</label>
+                                    <input type="password" id="cluster_token_value" placeholder="Long token secret from Proxmox"></div>
+                            </div>
+                        </div>
+                        <!-- Password field (hidden by default) -->
+                        <div id="clusterPasswordField" style="display:none;">
+                            <div class="form-group">
+                                <label for="cluster_password">Password:</label>
+                                <input type="password" id="cluster_password" placeholder="Cluster password"></div>
+                        </div>
+                        <div class="form-group" style="display:flex;gap:20px;">
+                            <label><input type="checkbox" id="cluster_verify_ssl"> Verify SSL</label>
+                        </div>
+                        <button type="submit" class="btn-primary">Save Cluster</button>
+                        <button type="button" onclick="toggleClusterForm()" style="margin-left:10px;">Cancel</button>
+                    </form>
+                </div>
+
+                <table id="clusterTable" style="width:100%;">
+                    <thead><tr><th>Name</th><th>Host:Port</th><th>Auth</th><th>Created</th><th></th></tr></thead>
+                    <tbody id="clusterTableBody">
+                        <tr><td colspan="4" style="text-align:center;color:#6c757d;">No clusters configured yet.</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- Sync & Discover buttons -->
+                <div style="margin-top:15px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn-success" id="discoverAllBtn" onclick="discoverAllClusters()" style="display:none;">Discover from All Clusters</button>
+                    <button class="btn-primary" id="syncDefaultGroupBtn" onclick="syncDefaultGroup()" style="display:none;background:#17a2b8;border-color:#17a2b8;">Sync Default Group</button>
+                    <span id="syncResultMsg" style="color:#6c757d;font-size:0.9em;"></span>
+                </div>
+            </div>
+
+            <!-- Manual Discovery Card (existing) -->
             <div class="card">
                 <h3>Connect to Proxmox Cluster</h3>
                 <form id="discoverForm">
@@ -513,7 +591,7 @@
                     <button class="btn-success" onclick="importSelectedDiscovered()">Import Selected</button>
                     <span style="color:#6c757d;">SSH user:</span>
                     <input type="text" id="discovery_ssh_user" placeholder="(uses default)" style="width:120px;">
-                    <span id="discoverySshHint" style="color:#6c757d;font-size:0.85em;"></span>
+                    <span style="color:#6c757d;font-size:0.85em;" id="importClusterHint"></span>
                 </div>
                 <div id="discoveryResultMessage" style="margin-top:15px;font-weight:bold;">
                     <span id="debugSortTarget" style="color:#6c757d;font-size:0.85em;"></span>
@@ -823,18 +901,38 @@
                 return;
             }
 
+            // Determine if we have cluster info (multi-cluster discover)
+            const hasClusterInfo = containers.some(c => c.cluster_id);
+            const header = document.getElementById('discoveryTableHeader');
+            // Toggle cluster column visibility by showing/hiding the 6th th
+            const ipTh = header.querySelector('[data-col="5"]');
+            let clusterTh = header.querySelector('[data-col="6"]');
+            if (!clusterTh) {
+                clusterTh = document.createElement('th');
+                clusterTh.setAttribute('class', 'sortable');
+                clusterTh.setAttribute('data-col', '6');
+                clusterTh.innerHTML = 'Cluster <span class="sort-arrow">↕</span>';
+                clusterTh.onclick = function() { sortTable(6); };
+                header.insertBefore(clusterTh, ipTh.nextSibling);
+            }
+            if (hasClusterInfo) {
+                clusterTh.style.display = '';
+            } else {
+                clusterTh.style.display = 'none';
+            }
+
             containers.forEach(c => {
                 const tr = document.createElement('tr');
                 const ips = c.all_ips && c.all_ips.length > 0 ? c.all_ips.join(', ') : 'N/A';
+                const clusterCell = hasClusterInfo ? `<td data-field="6">${esc(c.cluster_name || '?')}</td>` : '<td data-field="6" style="display:none;"></td>';
 
-                // Explicit cells keyed by data attribute for robustness.
-                // Note: cell indices must match the th data-col values exactly.
                 tr.innerHTML = `
                     <td><input type="checkbox" class="discoveryChk" value="${c.container_id}"></td>
                     <td data-field="1">${c.container_id}</td>
                     <td data-field="2">${c.name}</td>
-                    <td data-field="3" class="status-${c.status}">${c.status}</td>
-                    <td data-field="4">${c.node}</td>
+                    <td data-field="3" class="status-${c.status}">${c.status || 'unknown'}</td>
+                    <td data-field="4">${c.node || '?'}</td>
+                    ${clusterCell}
                     <td data-field="5">${ips}</td>
                 `;
                 tbody.appendChild(tr);
@@ -844,6 +942,16 @@
             document.getElementById('discoveryHost').textContent = host;
             document.getElementById('discoveryResultsCard').style.display = 'block';
             document.getElementById('discoveryResultMessage').textContent = '';
+
+            // Set import cluster hint — if all from one cluster, track its ID
+            const clusters = new Set(containers.map(c => c.cluster_id).filter(Boolean));
+            if (clusters.size === 1) {
+                _importClusterId = containers[0].cluster_id;
+                document.getElementById('importClusterHint').textContent = `→ will save to cluster: ${containers[0].cluster_name}`;
+            } else {
+                _importClusterId = null;
+                document.getElementById('importClusterHint').textContent = '';
+            }
         }
 
         function toggleSelectAll(checkbox) {
@@ -883,6 +991,12 @@
             };
             const sshVal = document.getElementById('discovery_ssh_user').value.trim();
             if (sshVal) body.ssh_user = sshVal;
+            // If we have a tracked cluster_id from discovery, use those credentials
+            if (_importClusterId) {
+                body.cluster_id = _importClusterId;
+            } else {
+                delete body.cluster_id;
+            }
             return body;
         }
 
@@ -914,8 +1028,211 @@
         }
 
         // -----------------------------------------------------------------------
-        // Group management
+        // Proxmox cluster management
         // -----------------------------------------------------------------------
+
+        let _loadedClusters = [];
+
+        function loadClusters() {
+            fetch('/proxmox/clusters')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) return;
+                    _loadedClusters = data.clusters || [];
+                    renderClusterTable();
+                    // Show sync/discover buttons if clusters exist
+                    const hasBtns = _loadedClusters.length > 0;
+                    document.getElementById('discoverAllBtn').style.display = hasBtns ? 'inline-block' : 'none';
+                    document.getElementById('syncDefaultGroupBtn').style.display = hasBtns ? 'inline-block' : 'none';
+                });
+        }
+
+        function renderClusterTable() {
+            const tbody = document.getElementById('clusterTableBody');
+            if (!_loadedClusters.length) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#6c757d;">No clusters configured yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = _loadedClusters.map(c => `
+                <tr>
+                    <td>${esc(c.name)}</td>
+                    <td>${esc(c.host)}:${c.port || 8006}</td>
+                    <td>${c.token_value ? (c.token_value.startsWith('***') ? 'API Token' : 'Token') : (c.password ? 'Password' : '—')}</td>
+                    <td style="font-size:0.85em;color:#6c757d;">${c.created_at || '?'}</td>
+                    <td><button class="btn-primary" style="padding:2px 8px;font-size:0.8em;" onclick="editCluster(${c.id})">Edit</button>
+                        <button class="btn-danger" style="padding:2px 8px;font-size:0.8em;" onclick="deleteCluster(${c.id})">Del</button></td>
+                </tr>`).join('');
+        }
+
+        function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+        function toggleClusterForm() {
+            const card = document.getElementById('clusterFormCard');
+            card.style.display = card.style.display === 'none' ? 'block' : 'none';
+            if (card.style.display === 'none') resetClusterForm();
+        }
+
+        function toggleAuthFields() {
+            const method = document.querySelector('input[name="auth_method"]:checked').value;
+            document.getElementById('clusterTokenFields').style.display = method === 'token' ? 'block' : 'none';
+            document.getElementById('clusterPasswordField').style.display = method === 'password' ? 'block' : 'none';
+        }
+
+        function resetClusterForm() {
+            document.getElementById('cluster_edit_id').value = '';
+            document.getElementById('clusterFormTitle').textContent = 'Add Cluster';
+            document.getElementById('cluster_name').value = '';
+            document.getElementById('cluster_host').value = '';
+            document.getElementById('cluster_user').value = 'root@pam';
+            document.getElementById('cluster_port').value = '8006';
+            document.getElementById('cluster_token_name').value = '';
+            document.getElementById('cluster_token_value').value = '';
+            document.getElementById('cluster_password').value = '';
+            document.getElementById('cluster_verify_ssl').checked = false;
+            document.querySelector('input[name="auth_method"][value="token"]').checked = true;
+            toggleAuthFields();
+        }
+
+        // Cluster form submit handler
+        document.getElementById('clusterForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const data = {
+                id: document.getElementById('cluster_edit_id').value || null,
+                name: document.getElementById('cluster_name').value.trim(),
+                host: document.getElementById('cluster_host').value.trim(),
+                port: document.getElementById('cluster_port').value,
+                user: document.getElementById('cluster_user').value.trim(),
+                token_name: document.getElementById('cluster_token_name').value.trim(),
+                token_value: document.getElementById('cluster_token_value').value,
+                password: document.getElementById('cluster_password').value,
+                verify_ssl: document.getElementById('cluster_verify_ssl').checked,
+            };
+            fetch('/proxmox/clusters', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    toggleClusterForm();
+                    loadClusters();
+                } else {
+                    alert('Error saving cluster: ' + result.message);
+                }
+            })
+            .catch(err => alert('Error: ' + err.message));
+        });
+
+        function editCluster(id) {
+            const c = _loadedClusters.find(x => x.id === id);
+            if (!c) return;
+            document.getElementById('cluster_edit_id').value = c.id;
+            document.getElementById('clusterFormTitle').textContent = 'Edit Cluster: ' + esc(c.name);
+            document.getElementById('cluster_name').value = c.name;
+            document.getElementById('cluster_host').value = c.host;
+            document.getElementById('cluster_user').value = c.user;
+            document.getElementById('cluster_port').value = c.port || 8006;
+            // Restore auth method
+            const isToken = !!(c.token_name || c.token_value);
+            document.querySelector(`input[name="auth_method"][value="${isToken ? 'token' : 'password'}"]`).checked = true;
+            toggleAuthFields();
+            if (isToken) {
+                document.getElementById('cluster_token_name').value = c.token_name || '';
+                // Show masked value, user can clear and re-enter to update
+                const existingVal = document.getElementById('cluster_token_value');
+                if (c.token_value && c.token_value.startsWith('***') && c.token_value.length < 20) {
+                    existingVal.placeholder = 'Token unchanged (re-enter to change)';
+                    existingVal.value = '';
+                } else {
+                    existingVal.value = c.token_value;
+                }
+            } else {
+                document.getElementById('cluster_password').placeholder = c.password && c.password.startsWith('***') ? 'Password unchanged' : '';
+            }
+            document.getElementById('cluster_verify_ssl').checked = !!c.verify_ssl;
+            document.getElementById('clusterFormCard').style.display = 'block';
+        }
+
+        function deleteCluster(id) {
+            const c = _loadedClusters.find(x => x.id === id);
+            if (!c || !confirm(`Delete cluster "${c.name}"? Containers imported from it will remain in the DB.`)) return;
+            fetch(`/proxmox/clusters/${id}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) loadClusters();
+                    else alert('Error: ' + result.message);
+                });
+        }
+
+        // -----------------------------------------------------------------------
+        // Discover from all clusters
+        // -----------------------------------------------------------------------
+
+        function discoverAllClusters() {
+            const btn = document.getElementById('discoverAllBtn');
+            btn.disabled = true;
+            btn.textContent = 'Discovering…';
+
+            fetch('/proxmox/discover-all', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = 'Discover from All Clusters';
+                    if (!data.success) {
+                        alert('Discovery failed: ' + data.message);
+                        return;
+                    }
+                    showDiscoveryResults(data.containers, `${data.clusters_checked} cluster(s)`);
+                    // Store the cluster_id hint for import
+                    _importClusterId = null;  // Will be inferred from the first container
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.textContent = 'Discover from All Clusters';
+                    alert('Error: ' + err.message);
+                });
+        }
+
+        // -----------------------------------------------------------------------
+        // Sync default group
+        // -----------------------------------------------------------------------
+
+        function syncDefaultGroup() {
+            const msgEl = document.getElementById('syncResultMsg');
+            const btn = document.getElementById('syncDefaultGroupBtn');
+            btn.disabled = true;
+            btn.textContent = 'Syncing…';
+            msgEl.textContent = '';
+
+            fetch('/proxmox/sync-default-group', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = 'Sync Default Group';
+                    if (!data.success) {
+                        msgEl.style.color = '#dc3545';
+                        msgEl.textContent = 'Sync failed: ' + data.message;
+                        return;
+                    }
+                    const parts = [];
+                    if (data.added && data.added.length) parts.push(`+${data.added.length} added (${data.added.join(', ')})`);
+                    if (data.removed && data.removed.length) parts.push(`${data.removed.length} removed (${data.removed.join(', ')})`);
+                    if (data.skipped_not_running) parts.push(`${data.skipped_not_running} skipped (not running)`);
+                    msgEl.style.color = '#28a745';
+                    msgEl.textContent = parts.length ? 'Sync done: ' + parts.join(' | ') : 'No changes needed.';
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.textContent = 'Sync Default Group';
+                    msgEl.style.color = '#dc3545';
+                    msgEl.textContent = 'Error: ' + err.message;
+                });
+        }
+
+        // When importing containers, track which cluster_id to associate them with
+        let _importClusterId = null;
+
 
         let _currentGroupScheduleId = null;
 
@@ -1263,9 +1580,31 @@
 
         // Scope picker — clear form fields when user changes target
         document.getElementById('schedule_scope').addEventListener('change', function() {
-            if (this.value === '_default') loadDefaultSchedule();
-            else loadGroups();
+            if (this.value === '_default') {
+                loadDefaultSchedule();
+                document.getElementById('autoSyncGroup').style.display = 'block';
+            } else {
+                loadGroups();
+                document.getElementById('autoSyncGroup').style.display = 'none';
+            }
         });
+
+        function loadDefaultSchedule() {
+            fetch('/default-schedule')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success || !data.schedule) return;
+                    const s = data.schedule;
+                    document.getElementById('schedule_enabled').checked = s.enabled !== false;
+                    if (s.schedule_type) document.getElementById('schedule_type').value = s.schedule_type;
+                    if (s.time_of_day) document.getElementById('time_of_day').value = s.time_of_day;
+                    if (s.day_of_week != null) document.getElementById('day_of_week').value = s.day_of_week;
+                    if (s.maintenance_window_start) document.getElementById('maintenance_start').value = s.maintenance_window_start;
+                    if (s.maintenance_window_end) document.getElementById('maintenance_window_end').value = s.maintenance_window_end;
+                    if ('auto_sync_proxmox' in s) document.getElementById('schedule_auto_sync').checked = s.auto_sync_proxmox === true;
+                })
+                .catch(() => {});
+        }
 
         // Save button handler
         document.getElementById('scheduleForm').addEventListener('submit', function(e) {
@@ -1285,6 +1624,7 @@
                         day_of_week: parseInt(document.getElementById('day_of_week').value),
                         maintenance_window_start: document.getElementById('maintenance_start').value,
                         maintenance_window_end: document.getElementById('maintenance_window_end').value,
+                        auto_sync_proxmox: document.getElementById('schedule_auto_sync').checked,
                     })
                 })
                 .then(r => r.json())
@@ -1428,6 +1768,7 @@
 
         // Load default SSH user and hint on page load
         loadDefaultSshUser();
+        loadClusters();
 
     </script>
 </body>

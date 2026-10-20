@@ -107,6 +107,9 @@ def init_db(app):
         # Ensure groups schema exists (idempotent migration)
         _ensure_groups_schema(db)
 
+        # Ensure proxmox_clusters table and containers.last_cluster_id exist
+        _ensure_proxmox_schema(db)
+
         db.commit()
 
 def get_container_by_id(container_id):
@@ -135,29 +138,33 @@ def save_container(container_data):
 
     if 'id' in container_data and container_data['id']:
         # Update existing
+        cluster_id = container_data.get('last_cluster_id')
         db.execute('''
             UPDATE containers
             SET name=?, container_id=?, status=?, last_updated=?, updated_needs=?,
-                ssh_host=?, ssh_port=?, ssh_user=?, snapshot_enabled=?, updated_at=CURRENT_TIMESTAMP
+                ssh_host=?, ssh_port=?, ssh_user=?, snapshot_enabled=?,
+                last_cluster_id=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=?
         ''', (
             container_data['name'], container_data['container_id'], container_data['status'],
             container_data.get('last_updated'), container_data.get('updated_needs'),
             container_data.get('ssh_host'), container_data.get('ssh_port'),
             container_data.get('ssh_user'), container_data.get('snapshot_enabled'),
+            cluster_id,
             container_data['id']
         ))
     else:
         # Insert new
         db.execute('''
             INSERT INTO containers (name, container_id, status, last_updated, updated_needs,
-                                   ssh_host, ssh_port, ssh_user, snapshot_enabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   ssh_host, ssh_port, ssh_user, snapshot_enabled, last_cluster_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             container_data['name'], container_data['container_id'], container_data['status'],
             container_data.get('last_updated'), container_data.get('updated_needs'),
             container_data.get('ssh_host'), container_data.get('ssh_port'),
-            container_data.get('ssh_user'), container_data.get('snapshot_enabled')
+            container_data.get('ssh_user'), container_data.get('snapshot_enabled'),
+            container_data.get('last_cluster_id')
         ))
 
     db.commit()
@@ -287,6 +294,110 @@ def _ensure_groups_schema(db):
             FOREIGN KEY (container_id) REFERENCES containers(id) ON DELETE CASCADE
         )
     ''')
+
+
+# ---------------------------------------------------------------------------
+# Proxmox migration — run at startup
+# ---------------------------------------------------------------------------
+
+def _ensure_proxmox_schema(db):
+    """Ensure proxmox_clusters table exists and containers has last_cluster_id."""
+    # 1) Create proxmox_clusters table (idempotent)
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS proxmox_clusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER DEFAULT 8006,
+            user TEXT NOT NULL,
+            token_name TEXT DEFAULT '',
+            token_value TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            verify_ssl BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 2) Add last_cluster_id column to containers if missing
+    cols = {row[1] for row in db.execute('PRAGMA table_info(containers)').fetchall()}
+    if 'last_cluster_id' not in cols:
+        db.execute('ALTER TABLE containers ADD COLUMN last_cluster_id INTEGER DEFAULT NULL')
+        db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_containers_last_cluster
+            ON containers(last_cluster_id)
+        ''')
+
+
+# ---------------------------------------------------------------------------
+# Proxmox cluster CRUD
+# ---------------------------------------------------------------------------
+
+def get_all_proxmox_clusters():
+    """Return all configured Proxmox clusters."""
+    db = get_db()
+    rows = db.execute(
+        'SELECT * FROM proxmox_clusters ORDER BY name'
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_proxmox_cluster_by_id(cluster_id):
+    """Return a single Proxmox cluster dict, or None."""
+    db = get_db()
+    row = db.execute(
+        'SELECT * FROM proxmox_clusters WHERE id = ?', (cluster_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def save_proxmox_cluster(cluster_data):
+    """Insert or update a Proxmox cluster.  cluster_data must contain 'name' and 'host'.
+    For updates also include 'id'.
+
+    Passwords/tokens are stored as plain text (user confirmed this is acceptable).
+    """
+    db = get_db()
+    if 'id' in cluster_data and cluster_data['id']:
+        db.execute('''
+            UPDATE proxmox_clusters
+            SET name=?, host=?, port=?, user=?, token_name=?, token_value=?,
+                password=?, verify_ssl=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        ''', (
+            cluster_data['name'],
+            cluster_data['host'],
+            int(cluster_data.get('port', 8006)),
+            cluster_data['user'],
+            cluster_data.get('token_name', ''),
+            cluster_data.get('token_value', ''),
+            cluster_data.get('password', ''),
+            bool(cluster_data.get('verify_ssl', False)),
+            cluster_data['id'],
+        ))
+    else:
+        db.execute('''
+            INSERT INTO proxmox_clusters
+                (name, host, port, user, token_name, token_value, password, verify_ssl)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            cluster_data['name'],
+            cluster_data['host'],
+            int(cluster_data.get('port', 8006)),
+            cluster_data['user'],
+            cluster_data.get('token_name', ''),
+            cluster_data.get('token_value', ''),
+            cluster_data.get('password', ''),
+            bool(cluster_data.get('verify_ssl', False)),
+        ))
+    db.commit()
+
+
+def delete_proxmox_cluster(cluster_id):
+    """Delete a Proxmox cluster definition."""
+    db = get_db()
+    db.execute('DELETE FROM proxmox_clusters WHERE id = ?', (cluster_id,))
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +621,8 @@ def get_default_schedule():
     Structure::
 
         {type: 'daily'|'weekly', time_of_day: 'HH:MM', day_of_week: int,
-         enabled: bool, maintenance_window_start|end: str}
+         enabled: bool, maintenance_window_start|end: str,
+         auto_sync_proxmox: bool}
     """
     value = get_configuration('default_schedule')
     if not value:
@@ -520,13 +632,17 @@ def get_default_schedule():
         cfg = json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return None
-    # Ensure boolean
+    # Ensure booleans
     cfg['enabled'] = bool(cfg.get('enabled', False))
+    cfg['auto_sync_proxmox'] = bool(cfg.get('auto_sync_proxmox', False))
     return cfg
 
 
 def save_default_schedule(schedule_data):
-    """Save a default schedule config.  Pass the same fields as individual/group schedules."""
+    """Save a default schedule config.  Pass the same fields as individual/group schedules.
+
+    Extra field: auto_sync_proxmox (bool) — sync container list from clusters before patches.
+    """
     import json
     entry = {
         'schedule_type': schedule_data.get('schedule_type', 'daily'),
@@ -535,6 +651,7 @@ def save_default_schedule(schedule_data):
         'enabled': bool(schedule_data.get('enabled', True)),
         'maintenance_window_start': schedule_data.get('maintenance_window_start'),
         'maintenance_window_end': schedule_data.get('maintenance_window_end'),
+        'auto_sync_proxmox': bool(schedule_data.get('auto_sync_proxmox', False)),
     }
     set_configuration('default_schedule', json.dumps(entry))
 

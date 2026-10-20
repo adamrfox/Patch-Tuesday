@@ -67,11 +67,22 @@ class Scheduler:
             return None
 
     def run_scheduled_patches(self):
-        """Run all scheduled patch operations"""
+        """Run all scheduled patch operations.
+
+        If the config key 'auto_sync_proxmox' is enabled and a default-group schedule
+        is being evaluated, first scan all configured clusters and sync the container list.
+        """
         self.load_schedules()
 
         results = []
         patched = set()  # track container_ids already patched this pass
+
+        # Check if auto-sync is enabled (config key in configuration table)
+        from .database import get_db, get_default_schedule
+        cfg = get_default_schedule()
+        auto_sync = bool(cfg.get('auto_sync_proxmox', False)) if cfg else False
+        sync_done = False
+
         for schedule in self.schedules:
             try:
                 cid = schedule['container_id']
@@ -93,7 +104,22 @@ class Scheduler:
                 if not next_run:
                     continue
 
-                logger.info(f"Running scheduled patch for {container['name']} (source: {schedule.get('schedule_source', 'unknown')})")
+                # Auto-sync before running default-group schedules (once per pass)
+                source = schedule.get('schedule_source', 'unknown')
+                if auto_sync and not sync_done and source == 'default':
+                    try:
+                        from .container_manager import container_manager
+                        sync_result = container_manager.sync_default_group()
+                        logger.info(
+                            f"Cluster sync before default-group patches: "
+                            f"added={sync_result['added']}, removed={sync_result['removed']}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Auto-sync failed: {e}")
+                    finally:
+                        sync_done = True
+
+                logger.info(f"Running scheduled patch for {container['name']} (source: {source})")
 
                 result = patch_engine.apply_patches(cid)
                 patched.add(cid)

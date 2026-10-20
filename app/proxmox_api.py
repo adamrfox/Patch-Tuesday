@@ -429,7 +429,7 @@ def discover_proxmox_containers(proxmox_host, proxmox_user=None, proxmox_passwor
     return discovered
 
 
-def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22):
+def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22, cluster_id=None):
     """Save a list of discovered Proxmox containers into the patch_tuesday database."""
     from .database import save_container, get_container_by_cid, get_container_by_name
 
@@ -452,6 +452,7 @@ def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22):
             'ssh_port': ssh_port,
             'ssh_user': ssh_user,
             'snapshot_enabled': True,
+            'last_cluster_id': cluster_id,
         }
 
         try:
@@ -463,4 +464,115 @@ def import_proxmox_containers(proxmox_containers, ssh_user='root', ssh_port=22):
             logger.error(error_msg)
             result['errors'].append(error_msg)
 
+    return result
+
+
+def discover_from_cluster(cluster):
+    """Discover containers from a stored cluster definition.
+
+    Args:
+        cluster: dict with keys from proxmox_clusters table (host, user, port, etc.)
+
+    Returns:
+        List of dicts (same format as discover_proxmox_containers).
+    """
+    has_token = bool(cluster.get('token_value'))
+    has_password = bool(cluster.get('password'))
+
+    if not has_token and not has_password:
+        raise ValueError(f"Cluster '{cluster['name']}' has no credentials configured")
+
+    return discover_proxmox_containers(
+        proxmox_host=cluster['host'],
+        proxmox_user=cluster['user'],
+        proxmox_port=int(cluster.get('port', 8006)),
+        verify_ssl=bool(cluster.get('verify_ssl', False)),
+        token_name=cluster.get('token_name'),
+        token_value=cluster.get('token_value') if has_token else None,
+        proxmox_password=cluster.get('password') if has_password else None,
+    )
+
+
+def sync_default_group():
+    """Scan all configured clusters and sync the default group membership.
+
+    Returns:
+        dict with keys: added (list of new containers), removed (list of deleted names),
+                        skipped_not_running (int), errors (list)
+    """
+    from .database import get_all_proxmox_clusters, delete_container, get_default_schedule
+
+    result = {'added': [], 'removed': set(), 'skipped_not_running': 0, 'errors': []}
+
+    # Only sync if a default schedule is configured and enabled
+    default_sched = get_default_schedule()
+    if not default_sched or not default_sched.get('enabled'):
+        logger.info("No enabled default schedule found — skipping cluster sync")
+        return result
+
+    clusters = get_all_proxmox_clusters()
+    if not clusters:
+        logger.info("No Proxmox clusters configured — skipping cluster sync")
+        return result
+
+    # Build a set of all known container_ids across all clusters
+    known_containers = {}  # vmid -> discovered info
+    for cluster in clusters:
+        try:
+            containers = discover_from_cluster(cluster)
+            for c in containers:
+                if c['status'] != 'running':
+                    result['skipped_not_running'] += 1
+                    continue
+                known_containers[c['container_id']] = {
+                    'cluster_id': cluster['id'],
+                    'cluster_name': cluster['name'],
+                    **c,
+                }
+        except Exception as e:
+            logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
+            result['errors'].append(f"{cluster['name']}: {e}")
+
+    # Find containers in the DB that belong to any synced cluster
+    from .database import get_all_containers
+    all_db_containers = get_all_containers()
+    for container in all_db_containers:
+        cid = container.get('last_cluster_id')
+        if cid is not None and cid in {c['id'] for c in clusters}:
+            # This container came from a synced cluster
+            actual_vmid = container['container_id']
+            if actual_vmid not in known_containers:
+                # Container no longer exists on any cluster — hard delete it
+                logger.info(f"Removing deleted container: {container['name']} (vmid={actual_vmid})")
+                delete_container(container['id'])
+                result['removed'].add(container['name'])
+
+    # Add new running containers that aren't in the DB yet
+    from .database import get_container_by_cid, get_container_by_name
+    for vmid, info in known_containers.items():
+        existing = get_container_by_cid(vmid) or get_container_by_name(info['name'])
+        if not existing:
+            container_data = {
+                'name': info['name'],
+                'container_id': vmid,
+                'status': info.get('status', 'unknown'),
+                'last_updated': None,
+                'updated_needs': False,
+                'ssh_host': info.get('primary_ip'),
+                'ssh_port': 22,
+                'ssh_user': 'root',
+                'snapshot_enabled': True,
+                'last_cluster_id': info['cluster_id'],
+            }
+            try:
+                from .database import save_container
+                save_container(container_data)
+                result['added'].append(info['name'])
+                logger.info(f"Auto-added container from cluster '{info['cluster_name']}': {info['name']}")
+            except Exception as e:
+                logger.error(f"Failed to add container {info['name']}: {e}")
+                result['errors'].append(f"{info['name']}: {e}")
+
+    # Convert set to list for JSON serialization
+    result['removed'] = list(result['removed'])
     return result

@@ -79,12 +79,35 @@ class ContainerManager:
         from . import proxmox_api as pa
         try:
             result = pa.import_proxmox_containers(
-                proxmox_containers, ssh_user=ssh_user, ssh_port=ssh_port
+                proxmox_containers, ssh_user=ssh_user, ssh_port=ssh_port, cluster_id=cluster_id
             )
             return result
         except Exception as e:
             logger.error(f"Error importing containers from Proxmox: {e}")
             return {'imported': 0, 'skipped': 0, 'errors': [str(e)]}
+
+    def discover_from_cluster(self, cluster):
+        """Discover containers from a stored cluster definition."""
+        if not cluster or not cluster.get('host'):
+            logger.warning("discover_from_cluster called without valid cluster")
+            return []
+
+        try:
+            return pa.discover_from_cluster(cluster)
+        except ValueError as e:
+            logger.warning(f"Cannot discover from cluster: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Error discovering from cluster '{cluster.get('name', '?')}': {e}")
+            return []
+
+    def sync_default_group(self):
+        """Sync default group membership with current cluster container state."""
+        try:
+            return pa.sync_default_group()
+        except Exception as e:
+            logger.error(f"Error syncing default group: {e}")
+            return {'added': [], 'removed': [], 'skipped_not_running': 0, 'errors': [str(e)]}
 
     def add_container(self, name, container_id, ssh_host=None, ssh_port=22, ssh_user='root',
                      snapshot_enabled=True):
