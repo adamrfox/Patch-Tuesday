@@ -527,44 +527,7 @@
                 </div>
             </div>
 
-            <!-- Manual Discovery Card (existing) -->
-            <div class="card">
-                <h3>Connect to Proxmox Cluster</h3>
-                <form id="discoverForm">
-                    <div class="form-group">
-                        <label for="discovery_host">Cluster Host:</label>
-                        <input type="text" id="discovery_host" name="host" placeholder="192.168.86.19 or cluster hostname — if DNS fails, try a direct IP" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="discovery_user">User:</label>
-                        <input type="text" id="discovery_user" name="user" placeholder="root@pam" value="root@pam">
-                    </div>
-                    <div class="form-group">
-                        <label for="discovery_password">Password (optional — use token if available):</label>
-                        <input type="password" id="discovery_password" name="password">
-                    </div>
-                    <div class="form-group">
-                        <label for="discovery_token">API Token Name (optional, e.g. patch-tuesday):</label>
-                        <input type="text" id="discovery_token" name="token_name">
-                    </div>
-                    <div class="form-group">
-                        <label for="discovery_token_value">API Token Secret (the long token value from Proxmox):</label>
-                        <input type="password" id="discovery_token_value" name="token_value" placeholder="Paste the token secret here">
-                    </div>
-                    <div class="form-group">
-                        <label for="discovery_port">Port:</label>
-                        <input type="number" id="discovery_port" name="port" value="8006">
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="discovery_verify_ssl" name="verify_ssl" checked> Verify SSL
-                        </label>
-                    </div>
-                    <button type="submit">Discover Containers</button>
-                </form>
-            </div>
-
-            <div id="discoveryLoading">
+            <div id="discoveryLoading" style="display:none;">
                 <div class="spinner"></div>
                 <div>Scanning Proxmox cluster…</div>
             </div>
@@ -809,43 +772,6 @@
             });
         });
 
-        // Discovery tab functions
-        document.getElementById('discoverForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-
-            const formData = new FormData(this);
-            const data = {};
-            for (let [key, value] of formData.entries()) {
-                data[key] = value;
-            }
-            // Convert boolean fields
-            data.verify_ssl = document.getElementById('discovery_verify_ssl').checked;
-            data.ignore_172 = document.getElementById('discovery_ignore_172').checked;
-
-            const loading = document.getElementById('discoveryLoading');
-            loading.style.display = 'block';
-
-            fetch('/proxmox/discover', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showDiscoveryResults(data.containers, document.getElementById('discovery_host').value, data.filtered_172);
-                } else {
-                    document.getElementById('discoveryLoading').style.display = 'none';
-                    alert('Discovery failed: ' + data.message);
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById('discoveryLoading').style.display = 'none';
-                alert('Error occurred during discovery');
-            });
-        });
-
         // Sort state
         let _sortCol = -1;
         let _sortAsc = true;
@@ -1002,15 +928,7 @@
         }
 
         function getImportAuthBody() {
-            const body = {
-                host: document.getElementById('discovery_host').value,
-                user: document.getElementById('discovery_user').value,
-                password: document.getElementById('discovery_password').value,
-                token_name: document.getElementById('discovery_token').value,
-                token_value: document.getElementById('discovery_token_value').value,
-                port: document.getElementById('discovery_port').value,
-                verify_ssl: document.getElementById('discovery_verify_ssl').checked,
-            };
+            const body = {};
             const sshVal = document.getElementById('discovery_ssh_user').value.trim();
             if (sshVal) body.ssh_user = sshVal;
             // If we have a tracked cluster_id from discovery, use those credentials
