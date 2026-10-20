@@ -344,9 +344,10 @@ def _ensure_proxmox_schema(db):
     if 'ssh_private_key_path' not in cols:
         db.execute('ALTER TABLE containers ADD COLUMN ssh_private_key_path TEXT DEFAULT NULL')
 
-    # Seed existing containers with the host's default SSH key (midway user)
-    import os
-    default_key = f'{os.path.expanduser("~")}/.ssh/id_ed25519'
+    # Seed existing containers with the SSH key used inside this container.
+    import os as _os, pwd as _pwd
+    home = _os.environ.get('HOME', None) or _pwd.getpwuid(_os.geteuid()).pw_dir
+    default_key = f'{home}/.ssh/id_ed25519'
     if os.path.exists(default_key):
         db.execute(
             'UPDATE containers SET ssh_private_key_path=? WHERE ssh_private_key_path IS NULL',

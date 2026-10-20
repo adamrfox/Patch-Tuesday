@@ -7,5 +7,7 @@ services:
       - "5000:5000"
     volumes:
       - ./data:/app/data
+      # Mount host SSH key so the app can authenticate to containers via SSH
+      - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     environment:
       - TZ=America/Los_Angeles

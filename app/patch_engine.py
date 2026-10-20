@@ -72,16 +72,19 @@ class PatchEngine:
             if private_key_path:
                 connect_kwargs['key_filename'] = [private_key_path]
             else:
-                # Try the host's default identity keys (midway user) and ssh-agent
+                # Try the host's default identity keys and ssh-agent.
+                # When running as root, also look under common home dirs (e.g. /home/midway/).
                 import os as _os
                 home = _os.path.expanduser('~')
-                defaults = [
-                    f'{home}/.ssh/id_ed25519',
-                    f'{home}/.ssh/id_rsa',
-                    f'{home}/.ssh/id_ecdsa',
-                    f'{home}/.ssh/id_dsa',
-                ]
-                connect_kwargs['key_filename'] = [k for k in defaults if _os.path.exists(k)]
+                key_dirs = [f'{home}/.ssh'] + \
+                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
+                candidate_keys = []
+                for d in key_dirs:
+                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
+                        p = f'{d}/{k}'
+                        if _os.path.exists(p):
+                            candidate_keys.append(p)
+                connect_kwargs['key_filename'] = candidate_keys
 
             ssh.connect(host, port=port, username=user, **connect_kwargs)
 
