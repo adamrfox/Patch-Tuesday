@@ -168,6 +168,7 @@
             <div class="tab" onclick="switchTab('scheduling')">Scheduling</div>
             <div class="tab" onclick="switchTab('groups')">Groups</div>
             <div class="tab" onclick="switchTab('discovery')">Discovery</div>
+            <div class="tab" onclick="switchTab('settings')">Settings</div>
             <div class="tab" onclick="switchTab('history')">Update History</div>
         </div>
 
@@ -507,13 +508,34 @@
                     <tbody id="discoveryTableBody">
                     </tbody>
                 </table>
-                <div style="margin-top:15px;">
+                <div style="margin-top:15px;display:flex;gap:10px;align-items:center;">
                     <button class="btn-success" onclick="importAllDiscovered()">Import All</button>
                     <button class="btn-success" onclick="importSelectedDiscovered()">Import Selected</button>
+                    <span style="color:#6c757d;">SSH user:</span>
+                    <input type="text" id="discovery_ssh_user" placeholder="(uses default)" style="width:120px;">
+                    <span id="discoverySshHint" style="color:#6c757d;font-size:0.85em;"></span>
                 </div>
                 <div id="discoveryResultMessage" style="margin-top:15px;font-weight:bold;">
                     <span id="debugSortTarget" style="color:#6c757d;font-size:0.85em;"></span>
                 </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="settings" class="tab-content">
+            <h2>Settings</h2>
+
+            <div class="card">
+                <h3>Default SSH User</h3>
+                <p>This user is automatically used for new containers added via Discovery or the individual add form.</p>
+                <form id="defaultSshUserForm">
+                    <div class="form-group">
+                        <label for="default_ssh_user">SSH User:</label>
+                        <input type="text" id="default_ssh_user" name="ssh_user" placeholder="e.g. root">
+                    </div>
+                    <button type="submit">Save</button>
+                    <span id="defaultSshUserMsg" style="margin-left:10px;font-weight:bold;"></span>
+                </form>
             </div>
         </div>
 
@@ -848,7 +870,7 @@
         }
 
         function getImportAuthBody() {
-            return {
+            const body = {
                 host: document.getElementById('discovery_host').value,
                 user: document.getElementById('discovery_user').value,
                 password: document.getElementById('discovery_password').value,
@@ -857,6 +879,9 @@
                 port: document.getElementById('discovery_port').value,
                 verify_ssl: document.getElementById('discovery_verify_ssl').checked,
             };
+            const sshVal = document.getElementById('discovery_ssh_user').value.trim();
+            if (sshVal) body.ssh_user = sshVal;
+            return body;
         }
 
         function importAllDiscovered() {
@@ -1371,7 +1396,64 @@
             _origSwitchTab.call(this, tabName);
             if (tabName === 'groups') loadGroups();
             if (tabName === 'scheduling') updateActiveSchedulesTable();
+            if (tabName === 'settings') loadDefaultSshUser();
         };
+
+        // -----------------------------------------------------------------------
+        // Default SSH user — settings tab + form defaults
+        // -----------------------------------------------------------------------
+
+        let _cachedDefaultSshUser = null;
+
+        function loadDefaultSshUser() {
+            fetch('/default-ssh-user')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) return;
+                    _cachedDefaultSshUser = data.ssh_user || 'root';
+                    document.getElementById('default_ssh_user').value = _cachedDefaultSshUser;
+                    // Also set the individual add form's SSH user field
+                    const addField = document.getElementById('ssh_user');
+                    if (addField) addField.value = _cachedDefaultSshUser;
+                    const hint = document.getElementById('discoverySshHint');
+                    if (hint) hint.textContent = `— default is "${_cachedDefaultSshUser}"`;
+                })
+                .catch(() => { /* ignore — defaults will be used */ });
+        }
+
+        document.getElementById('defaultSshUserForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const val = document.getElementById('default_ssh_user').value.trim();
+            if (!val) return;
+            fetch('/default-ssh-user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ssh_user: val })
+            })
+            .then(r => r.json())
+            .then(data => {
+                const msg = document.getElementById('defaultSshUserMsg');
+                if (data.success) {
+                    _cachedDefaultSshUser = val;
+                    msg.style.color = 'green';
+                    msg.textContent = 'Saved.';
+                    const hint = document.getElementById('discoverySshHint');
+                    if (hint) hint.textContent = `— default is "${val}"`;
+                    setTimeout(() => { msg.textContent = ''; }, 3000);
+                } else {
+                    msg.style.color = 'red';
+                    msg.textContent = data.message || 'Failed to save.';
+                }
+            })
+            .catch(() => {
+                const msg = document.getElementById('defaultSshUserMsg');
+                msg.style.color = 'red';
+                msg.textContent = 'Network error.';
+            });
+        });
+
+        // Load default SSH user and hint on page load
+        loadDefaultSshUser();
 
     </script>
 </body>

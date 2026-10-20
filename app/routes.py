@@ -10,7 +10,8 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       add_group_member, remove_group_member,
                       get_containers_not_in_group,
                       get_active_schedules, get_schedule_by_group,
-                      get_db, get_default_schedule, save_default_schedule, delete_default_schedule)
+                      get_db, get_default_schedule, save_default_schedule, delete_default_schedule,
+                      get_default_ssh_user, set_default_ssh_user)
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
@@ -50,13 +51,14 @@ def add_container():
     data = request.get_json()
 
     try:
+        default_user = get_default_ssh_user()
         container_data = {
             'name': data['name'],
             'container_id': data['container_id'],
             'status': 'configured',
             'ssh_host': data.get('ssh_host'),
             'ssh_port': int(data.get('ssh_port', 22)),
-            'ssh_user': data.get('ssh_user', 'root'),
+            'ssh_user': data.get('ssh_user', default_user),
             'snapshot_enabled': True
         }
 
@@ -211,9 +213,10 @@ def proxmox_import():
         else:
             to_import = discovered
 
+        default_user = get_default_ssh_user()
         result = container_manager.import_proxmox_containers(
             to_import,
-            ssh_user=data.get('ssh_user', 'root'),
+            ssh_user=data.get('ssh_user', default_user),
             ssh_port=int(data.get('ssh_port', 22)),
         )
 
@@ -426,3 +429,27 @@ def delete_default_schedule_route():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Default SSH user API
+# ---------------------------------------------------------------------------
+
+@main.route('/default-ssh-user', methods=['GET'])
+def get_default_ssh_user_route():
+    """Return the current default SSH user."""
+    val = get_default_ssh_user()
+    return jsonify({'success': True, 'ssh_user': val})
+
+
+@main.route('/default-ssh-user', methods=['POST'])
+def save_default_ssh_user_route():
+    """Save a new default SSH user."""
+    data = request.get_json()
+    if not data or 'ssh_user' not in data:
+        return jsonify({'success': False, 'message': 'ssh_user is required'}), 400
+    try:
+        set_default_ssh_user(data['ssh_user'].strip())
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500

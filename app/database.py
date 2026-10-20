@@ -94,7 +94,8 @@ def init_db(app):
             ('smtp_port', '587', 'SMTP server port'),
             ('smtp_user', '', 'SMTP username'),
             ('smtp_password', '', 'SMTP password'),
-            ('log_retention_days', '30', 'Number of days to retain logs')
+            ('log_retention_days', '30', 'Number of days to retain logs'),
+            ('default_ssh_user', 'root', 'Default SSH user for new containers'),
         ]
 
         for key, value, description in default_configs:
@@ -541,3 +542,17 @@ def save_default_schedule(schedule_data):
 def delete_default_schedule():
     """Remove the default schedule configuration."""
     set_configuration('default_schedule', '')
+
+
+# ---------------------------------------------------------------------------
+# Default SSH user — stored as a plain string in the configuration table
+# ---------------------------------------------------------------------------
+
+def get_default_ssh_user():
+    """Return the configured default SSH user, or 'root' if unset."""
+    return get_configuration('default_ssh_user') or 'root'
+
+
+def set_default_ssh_user(value):
+    """Save the default SSH user."""
+    set_configuration('default_ssh_user', value)

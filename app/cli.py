@@ -390,6 +390,7 @@ def main():
                 print("  --user USER          - Username, e.g. root@pam")
                 print("  --password PASS      - Password (fallback if no token)")
                 print("  --port PORT          - API port (default: 8006)")
+                print("  --ssh-user USER      - SSH user for imported containers (default: root)")
                 print("  --token-name NAME    - API token key name")
                 print("  --token-value VAL    - API token value")
                 print("  --insecure           - Skip SSL verification")
@@ -402,6 +403,7 @@ def main():
             verify_ssl = True
             token_name = None
             token_value = None
+            ssh_user = 'root'
             import_all = False
             selected_ids = []
 
@@ -438,6 +440,9 @@ def main():
                 elif sys.argv[i] in ('--insecure', '-k'):
                     verify_ssl = False
                     i += 1
+                elif sys.argv[i] == '--ssh-user' and i + 1 < len(sys.argv):
+                    ssh_user = sys.argv[i + 1]
+                    i += 2
                 else:
                     print(f"Unknown option: {sys.argv[i]}")
                     return
@@ -453,7 +458,7 @@ def main():
             final_ids = None if import_all else selected_ids
             import_containers(proxmox_host, proxmox_user, proxmox_password,
                             proxmox_port, verify_ssl, token_name, token_value,
-                            selected_ids=final_ids)
+                            selected_ids=final_ids, ssh_user=ssh_user)
 
         elif command == 'help':
             show_help()
