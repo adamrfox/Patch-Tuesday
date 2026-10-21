@@ -268,6 +268,7 @@
 
             <div class="card">
                 <h3>Managed Containers
+                    <span id="refreshTimestamp" style="font-size:0.75em;color:#6c757d;margin-right:8px;font-weight:normal;"></span>
                     <button id="refreshContainersBtn" type="button" onclick="loadContainerStatus()" style="float:right;font-size:0.85em;padding:4px 12px;background:#6c757d;" title="Refresh status">↻ Refresh</button>
                 </h3>
                 {% if containers %}
@@ -700,10 +701,12 @@
         }
 
         function loadContainerStatus() {
+            const tsEl = document.getElementById('refreshTimestamp');
             fetch('/api/containers/status')
                 .then(response => response.json())
                 .then(data => {
                     renderContainerStatus(data);
+                    tsEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
                 })
                 .catch(error => {
                     console.error('Error loading container status:', error);

@@ -11,18 +11,31 @@ import paramiko
 import logging
 import subprocess
 import time
+import os
+import threading
+import tempfile
 from datetime import datetime
 from .database import save_update_history, get_container_by_id
 
 logger = logging.getLogger(__name__)
+_LIVE_LOG_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'live_patch.log')
 
 
 def _count_upgradable(dry_run_output: str) -> int:
     """Count packages that would be upgraded from apt-get --dry-run output.
 
-    The dry-run output has a summary line like::
+    Two formats exist depending on the package count:
 
-        The following packages will be upgraded: NNN
+    Format A (small list, all on one line)::
+
+        The following packages will be upgraded: 5
+
+    Format B (long list, split across lines)::
+
+        The following packages will be upgraded:
+          package1
+          package2
+        3 upgraded, 0 newly installed, ...
 
     Returns 0 when nothing is upgradable (or when the line cannot be found).
     """
@@ -30,11 +43,19 @@ def _count_upgradable(dry_run_output: str) -> int:
         return 0
     for line in dry_run_output.splitlines():
         stripped = line.strip()
-        # Typical output: "The following packages will be upgraded: 5"
+        # Format A: "The following packages will be upgraded: 5"
         if stripped.startswith("The following packages will be upgraded"):
             parts = stripped.split(":")
             if len(parts) >= 2 and parts[1].strip().isdigit():
                 return int(parts[1].strip())
+
+    # Format B fallback: look for the summary line "N upgraded, ..."
+    import re as _re
+    for line in dry_run_output.splitlines():
+        m = _re.search(r'(\d+)\s+upgraded', line.strip())
+        if m:
+            return int(m.group(1))
+
     # Fallback: also check "The following packages will be REMOVED:" (zero means no regular upgrades)
     for line in dry_run_output.splitlines():
         stripped = line.strip()
@@ -62,8 +83,99 @@ class PatchEngine:
     def is_running(self, container_id):
         return container_id in self._active
 
-    def execute_ssh_command(self, host, port, user, command, timeout=300, private_key_path=None):
+    # ---------------------------------------------------------------
+    # Live log file — see live_patch_<id>.log for real-time patch output
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _start_live_log(container: dict) -> tuple:
+        """Create the local and remote log files.
+
+        Returns a tuple of (local_log_path, remote_log_path).
+        The remote path is used by tee on each step; at the end it is fetched back.
+        """
+        proxmox_id = str(container['container_id'])
+        local_path = os.path.join(os.path.dirname(_LIVE_LOG_PATH), f'live_patch_{proxmox_id}.log')
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, 'w') as f:
+            f.write(f"=== Patch run started at {datetime.now().isoformat()} ===\n")
+            f.write(
+                f"Container : {container['name']}  (ID={proxmox_id})\n"
+                f"Host      : {container['ssh_host']}:{container['ssh_port']}\n"
+                f"User      : {container.get('ssh_user', 'unknown')}\n"
+            )
+            f.write("---\n\n")
+        remote_path = '/tmp/ptu_update.log'
+        return local_path, remote_path
+
+    def _fetch_remote_log(self, host, port, user, remote_path, private_key_path=None) -> str:
+        """Download a file from the remote container via SFTP.
+
+        Returns the file content as a string.
+        """
+        try:
+            transport = paramiko.Transport((host, port))
+            key_kwargs = {}
+            if private_key_path:
+                key_kwargs['key_filename'] = [private_key_path]
+            else:
+                home = os.path.expanduser('~')
+                key_dirs = [f'{home}/.ssh'] + \
+                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
+                candidate_keys = []
+                for d in key_dirs:
+                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
+                        p = f'{d}/{k}'
+                        if os.path.exists(p):
+                            candidate_keys.append(p)
+                key_kwargs['key_filename'] = candidate_keys
+
+            transport.connect(username=user, **key_kwargs)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            content = sftp.open(remote_path).read().decode('utf-8', errors='replace')
+            sftp.close()
+            transport.close()
+            return content
+        except Exception:
+            logger.warning(f"Could not fetch remote log from {host}")
+            return ''
+
+    def _cleanup_remote_log(self, host, port, user, remote_path, private_key_path=None):
+        """Delete the remote temp log file."""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            connect_kwargs = {'timeout': 5}
+            if private_key_path:
+                connect_kwargs['key_filename'] = [private_key_path]
+            else:
+                home = os.path.expanduser('~')
+                key_dirs = [f'{home}/.ssh'] + \
+                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
+                candidate_keys = []
+                for d in key_dirs:
+                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
+                        p = f'{d}/{k}'
+                        if os.path.exists(p):
+                            candidate_keys.append(p)
+                connect_kwargs['key_filename'] = candidate_keys
+
+            ssh.connect(host, port=port, username=user, **connect_kwargs)
+            ssh.exec_command(f'rm -f {remote_path}')
+            ssh.close()
+        except Exception:
+            logger.warning(f"Could not clean up remote log from {host}")
+
+    def execute_ssh_command(self, host, port, user, command, timeout=300, private_key_path=None, on_line=None):
         """Execute a command via SSH and return its exit code.
+
+        Args:
+            host/port/user: SSH connection details.
+            command: The remote command to run.
+            timeout: Connection and read timeout in seconds.
+            private_key_path: Optional path to an SSH private key.
+            on_line: If provided, called with (text, 'stdout'/'stderr') for each
+                     line as it arrives, enabling live progress output.
 
         Returns:
             dict with keys:
@@ -99,24 +211,116 @@ class PatchEngine:
 
             stdin, stdout, stderr = ssh.exec_command(command, get_pty=True)
 
-            # Read output and error
-            output = stdout.read().decode('utf-8', errors='replace')
-            error = stderr.read().decode('utf-8', errors='replace')
+            # Use a threading.Lock so concurrent reads don't interleave log output
+            _line_lock = threading.Lock()
 
-            # IMPORTANT: read the exit code AFTER closing (or before, both work).
-            # recv_exit_status() blocks until the remote command finishes, which
-            # guarantees a valid exit code.
-            exit_code = stdout.channel.recv_exit_status()
+            if on_line is not None:
+                # --- Streaming with remote log via tee.
+                # With get_pty=True we CANNOT use stdout.read() — the PTY buffer
+                # fills up and blocks the remote command (hang). Instead we wrap
+                # the command in `tee` so output goes to both a remote file AND
+                # produces normal stdout/stderr for us to poll incrementally.
+                remote_log = '/tmp/ptu_update.log'
+                wrapper_cmd = (
+                    f"{command} 2>&1 | tee {remote_log}; "
+                    f"echo \"PTU_EXIT=$?\""
+                )
 
-            ssh.close()
+                stdin, stdout, stderr = ssh.exec_command(wrapper_cmd, get_pty=True)
 
-            success = (exit_code == 0)
-            return {
-                'success': success,
-                'exit_code': exit_code,
-                'output': output,
-                'error': error,
-            }
+                # Close stdin immediately so the remote side knows we're done.
+                stdin.close()
+
+                output_buf = ''
+                exit_code = None
+                timeout_at = time.monotonic() + 7200  # safety net: 2h max
+                while exit_code is None and time.monotonic() < timeout_at:
+                    if stdout.channel.exit_status_ready():
+                        exit_code = stdout.channel.recv_exit_status()
+                        # Drain any remaining buffered data
+                        while True:
+                            try:
+                                chunk = stdout.channel.recv(4096).decode('utf-8', errors='replace')
+                                if not chunk:
+                                    break
+                                for line in chunk.splitlines():
+                                    on_line(line)
+                                output_buf += chunk
+                            except Exception:
+                                break
+                        break
+
+                    # Poll for data — don't block
+                    if stdout.channel.recv_ready():
+                        chunk = stdout.channel.recv(65536).decode('utf-8', errors='replace')
+                        if chunk:
+                            for line in chunk.splitlines(True):  # keep newlines
+                                on_line(line.rstrip('\r\n'))
+                            output_buf += chunk
+                        else:
+                            time.sleep(0.1)
+                    else:
+                        time.sleep(0.1)
+
+                # After draining, fetch the remote tee log for complete output.
+                # recv() on PTY may miss data that flowed through the pipe to
+                # tee before exit_status_ready fires — the remote file is the
+                # source of truth. Also extract the real exit code from PTU_EXIT
+                # since the pipeline (cmd | tee) returns tee's exit code (0),
+                # not the command's exit code.
+                try:
+                    full_output = ''
+                    with open(remote_log, 'r') as rf:
+                        full_output = rf.read()
+                except Exception:
+                    full_output = output_buf  # fallback
+
+                real_exit = exit_code or -1
+                for line in reversed(full_output.splitlines()):
+                    stripped = line.strip()
+                    if stripped.startswith('PTU_EXIT='):
+                        try:
+                            real_exit = int(stripped.split('=')[1].strip())
+                        except (ValueError, IndexError):
+                            pass
+                        break
+
+                # Strip PTU_EXIT marker lines from output for cleanliness
+                clean_output = '\n'.join(
+                    l for l in full_output.splitlines()
+                    if not l.strip().startswith('PTU_EXIT=')
+                )
+
+                ssh.close()
+
+                success = (real_exit == 0) if real_exit is not None else False
+                return {
+                    'success': success,
+                    'exit_code': real_exit,
+                    'output': clean_output,
+                    'error': '',
+                    '_remote_log': remote_log,
+                }
+            else:
+                # Read output and error (non-streaming path)
+                output = stdout.read().decode('utf-8', errors='replace')
+                error = stderr.read().decode('utf-8', errors='replace')
+
+                # IMPORTANT: read the exit code AFTER closing (or before, both work).
+                # recv_exit_status() blocks until the remote command finishes, which
+                # guarantees a valid exit code.
+                exit_code = stdout.channel.recv_exit_status()
+
+                ssh.close()
+
+                success = (exit_code == 0)
+                return {
+                    'success': success,
+                    'exit_code': exit_code,
+                    'output': output,
+                    'error': error,
+                }
+
         except Exception as e:
             logger.error(f"SSH command execution failed: {str(e)}")
             return {
@@ -205,6 +409,63 @@ class PatchEngine:
         packages_updated = []
         error_message = ""
 
+        # Start live log file — the user can tail -f it for real-time output
+        try:
+            local_log_path, remote_log_path = self._start_live_log(container)
+        except Exception:
+            local_log_path = None
+            remote_log_path = None
+
+        def _log(line, kind):
+            """Write a line to the live log and Python logger."""
+            if local_log_path is not None:
+                try:
+                    with open(local_log_path, 'a') as f:
+                        f.write(f'[{kind.upper():5s}] {line}\n')
+                except Exception:
+                    pass
+            # Also route through standard logging for ops team logs
+            logger.info(f"[live-log {kind}] {line}")
+
+        def _flush_remote_log(result):
+            """Fetch the remote tee log, append to local file, clean up remote.
+
+            Must NEVER raise — callers save history AFTER this and must not
+            be prevented from doing so by a failed flush.
+            """
+            try:
+                if result is None:
+                    return
+                remote_log = result.get('_remote_log')
+                if not remote_log:
+                    return
+                content = self._fetch_remote_log(
+                    container['ssh_host'],
+                    container['ssh_port'],
+                    container['ssh_user'],
+                    remote_log,
+                    private_key_path=container.get('ssh_private_key_path'),
+                )
+                if content and local_log_path is not None:
+                    with open(local_log_path, 'a') as f:
+                        f.write(f'\n--- Remote log ({len(content)} bytes) ---\n')
+                        f.write(content)
+                        if not content.endswith('\n'):
+                            f.write('\n')
+                        f.write('--- end remote log ---\n\n')
+            except Exception:
+                logger.warning('Could not fetch remote tee log', exc_info=True)
+            try:
+                self._cleanup_remote_log(
+                    container['ssh_host'],
+                    container['ssh_port'],
+                    container['ssh_user'],
+                    remote_log if result else None,
+                    private_key_path=container.get('ssh_private_key_path'),
+                )
+            except Exception:
+                pass
+
         try:
             # ---------------------------------------------------------------
             # Snapshot before update (if enabled and we can locate the node)
@@ -243,6 +504,7 @@ class PatchEngine:
             # ---------------------------------------------------------------
             logger.info(f"Applying patches to {container['name']}")
             command = "sudo apt-get update"
+            _log("[Step 1/3] sudo apt-get update", "header")
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -250,6 +512,7 @@ class PatchEngine:
                 command,
                 timeout=300,
                 private_key_path=container.get('ssh_private_key_path'),
+                on_line=lambda line: _log(line, 'stdout'),
             )
 
             if not result['success']:
@@ -272,6 +535,8 @@ class PatchEngine:
                     'error_message': error_message,
                 })
                 self.register_done(container_id)
+                _flush_remote_log(result)
+                _log("[DONE] Failed — apt-get update ({})".format(container['name']), "footer")
                 return {
                     'success': False,
                     'error': error_message,
@@ -283,6 +548,7 @@ class PatchEngine:
             # Step 2: Dry-run — check what would be upgraded
             # ---------------------------------------------------------------
             command = "sudo apt-get --dry-run upgrade"
+            _log("[Step 2/3] sudo apt-get --dry-run upgrade", "header")
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -290,6 +556,7 @@ class PatchEngine:
                 command,
                 timeout=300,
                 private_key_path=container.get('ssh_private_key_path'),
+                on_line=lambda line: _log(line, 'stdout'),
             )
 
             if not result['success']:
@@ -311,6 +578,8 @@ class PatchEngine:
                     'error_message': error_message,
                 })
                 self.register_done(container_id)
+                _flush_remote_log(result)
+                _log("[DONE] Failed — dry-run check ({})".format(container['name']), "footer")
                 return {
                     'success': False,
                     'error': error_message,
@@ -350,6 +619,8 @@ class PatchEngine:
                     except Exception as e:
                         logger.warning(f"Could not clean up snapshot {snapshot_name}: {e}")
                 self.register_done(container_id)
+                _flush_remote_log(result)
+                _log("[DONE] Skipped — no updates ({})".format(container['name']), "footer")
                 return {
                     'success': True,
                     'start_time': start_time,
@@ -366,6 +637,7 @@ class PatchEngine:
             # Step 3: Actually perform the upgrade
             # ---------------------------------------------------------------
             command = "sudo apt-get -y upgrade"
+            _log("[Step 3/3] sudo apt-get -y upgrade", "header")
             result = self.execute_ssh_command(
                 container['ssh_host'],
                 container['ssh_port'],
@@ -373,6 +645,7 @@ class PatchEngine:
                 command,
                 timeout=600,  # Longer timeout for upgrade operation
                 private_key_path=container.get('ssh_private_key_path'),
+                on_line=lambda line: _log(line, 'stdout'),
             )
 
             if not result['success']:
@@ -404,6 +677,8 @@ class PatchEngine:
                         logger.error(f"Rollback exception for {container['name']}: {e}")
 
                 self.register_done(container_id)
+                _flush_remote_log(result)
+                _log("[DONE] Failed — apt-get upgrade ({})".format(container['name']), "footer")
                 return {
                     'success': False,
                     'error': error_message,
@@ -439,6 +714,8 @@ class PatchEngine:
 
             logger.info(f"Successfully applied patches to {container['name']} ({len(packages_updated)} package(s))")
             self.register_done(container_id)
+            _flush_remote_log(result)
+            _log("[DONE] Success — {} package(s) updated ({})".format(len(packages_updated), container['name']), "footer")
             return {
                 'success': True,
                 'start_time': start_time,
@@ -463,6 +740,7 @@ class PatchEngine:
             })
 
             self.register_done(container_id)
+            _log("[DONE] Failed — exception ({})".format(container['name']), "footer")
             return {
                 'success': False,
                 'error': error_message,
