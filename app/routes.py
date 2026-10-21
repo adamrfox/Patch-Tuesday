@@ -14,7 +14,8 @@ from .database import (get_all_containers, get_container_by_id, save_container,
                       get_default_ssh_user, set_default_ssh_user,
                       get_discovery_config, set_discovery_config,
                       get_all_proxmox_clusters, get_proxmox_cluster_by_id,
-                      save_proxmox_cluster, delete_proxmox_cluster)
+                      save_proxmox_cluster, delete_proxmox_cluster,
+                      get_recent_updates)
 from .container_manager import container_manager
 from .patch_engine import patch_engine
 from .alerting import alerting_system
@@ -41,25 +42,30 @@ def index():
     containers = get_all_containers()
     container_count = len(containers)
 
-    # Get some statistics
-    containers_with_updates = 0
-    successful_updates = 0
+    recent_updates = get_recent_updates(20)
 
-    # Placeholder for actual data - in a real implementation,
-    # you'd query the database for recent updates
+    # Compute live stats from the update_history table
+    db = get_db()
+    row1 = db.execute(
+        "SELECT COUNT(*) AS cnt FROM update_history "
+        "WHERE status = 'success' AND end_time >= datetime('now', '-24 hours')"
+    ).fetchone()
+    successful_updates = row1['cnt'] if row1 and row1['cnt'] else 0
 
-    recent_updates = []
-    schedules = get_active_schedules()
-    groups = get_all_groups()
+    row2 = db.execute(
+        "SELECT COUNT(DISTINCT container_id) AS cnt FROM update_history "
+        "WHERE status = 'success'"
+    ).fetchone()
+    containers_with_updates = row2['cnt'] if row2 and row2['cnt'] else 0
 
     return render_template('index.html',
                          containers=containers,
-                         container_count=container_count,
+                         container_count=len(containers),
                          containers_with_updates=containers_with_updates,
                          successful_updates=successful_updates,
                          recent_updates=recent_updates,
-                         schedules=schedules,
-                         groups=groups)
+                         schedules=get_active_schedules(),
+                         groups=get_all_groups())
 
 @main.route('/container', methods=['POST'])
 def add_container():
@@ -123,13 +129,13 @@ def patch_container(container_id):
 
 @main.route('/api/containers/status')
 def containers_status():
-    """Return per-container status: last_successful_update and is_patching."""
+    """Return per-container status: last_successful_update, is_patching, is_stopped."""
     from .database import get_db as _get_db
     from datetime import datetime as _dt
 
     db = _get_db()
     rows = db.execute(
-        "SELECT c.id, c.name, c.container_id, c.status, c.last_updated "
+        "SELECT c.id, c.name, c.container_id, c.status, c.last_updated, c.proxmox_node "
         "FROM containers c ORDER BY c.name"
     ).fetchall()
     result = []
@@ -140,6 +146,20 @@ def containers_status():
             'WHERE container_id = ? AND status = ?',
             (cid, 'success')
         ).fetchone()
+
+        # Live Proxmox stoppage check (only for containers with node info)
+        is_stopped = False
+        proxmox_node = row['proxmox_node'] if row['proxmox_node'] else None
+        proxmox_vmid = str(row['container_id']) if row['container_id'] else None
+        if proxmox_node and proxmox_vmid:
+            try:
+                from .proxmox_api import get_lxc_container_status
+                st = get_lxc_container_status(proxmox_node, proxmox_vmid)
+                if st.get('success') and st.get('status') == 'stopped':
+                    is_stopped = True
+            except Exception:
+                pass
+
         result.append({
             'id': cid,
             'name': row['name'],
@@ -147,6 +167,7 @@ def containers_status():
             'status': row['status'],
             'last_updated': latest['last_succ'] if latest and latest['last_succ'] else None,
             'is_patching': patch_engine.is_running(cid),
+            'is_stopped': is_stopped,
         })
     return jsonify(result)
 
@@ -244,7 +265,9 @@ def proxmox_discover():
             discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
             filtered_count = before - len(discovered)
 
-        return jsonify({'success': True, 'containers': discovered, 'filtered_172': filtered_count})
+        imported = get_all_containers()
+        imported_ids = [c['container_id'] for c in imported]
+        return jsonify({'success': True, 'containers': discovered, 'filtered_172': filtered_count, 'imported_ids': imported_ids})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
     except Exception as e:
@@ -260,14 +283,82 @@ def proxmox_import():
     data = request.get_json()
 
     try:
-        # If cluster_id is provided, discover from that stored cluster
         cluster_id = data.get('cluster_id')
-        if cluster_id:
+        selected_ids = data.get('container_ids')
+
+        if not cluster_id and selected_ids:
+            # Import selected containers — no single-cluster known, discover from all clusters.
+            # If the frontend sent discovered containers (from a recent multi-cluster discover),
+            # use those directly to avoid stale re-discovery mismatches.
+            discovered_from_frontend = data.get('discovered')
+            if discovered_from_frontend and isinstance(discovered_from_frontend, list) and len(discovered_from_frontend) > 0:
+                # Match by selected IDs from the passed-in discovered data
+                selected_set = set(str(s) for s in selected_ids)
+                to_import = [c for c in discovered_from_frontend if c.get('container_id') in selected_set]
+                if not to_import:
+                    return jsonify({
+                        'success': False,
+                        'message': f'None of the {len(selected_set)} selected container(s) were found in the discovery results. The containers may have been stopped or deleted. Try clicking "Discover" again.',
+                    }), 400
+                # Tag with cluster info from discovered data
+                for c in to_import:
+                    if 'cluster_id' not in c:
+                        clusters = get_all_proxmox_clusters()
+                        # Try to find the cluster by host
+                        host = c.get('primary_ip') or c.get('ip_address', '')
+                        for cl in clusters:
+                            if cl.get('host') and (host.startswith(cl['host']) or cl['host'].startswith(host)):
+                                c['cluster_id'] = cl['id']
+                                c['cluster_name'] = cl['name']
+                                break
+                return _do_import(to_import, data)
+
+            clusters = get_all_proxmox_clusters()
+            if not clusters:
+                return jsonify({'success': False, 'message': 'No Proxmox clusters configured.'}), 400
+            discovered = _discover_from_all_clusters(clusters)
+            # Filter by selected IDs
+            selected_set = set(str(s) for s in selected_ids)
+            to_import = [c for c in discovered if c['container_id'] in selected_set]
+            if not to_import:
+                return jsonify({
+                    'success': False,
+                    'message': f'None of the {len(selected_set)} selected container(s) were found on any configured cluster. They may have been stopped or deleted since discovery. Try clicking "Discover" again.',
+                }), 400
+            # Pass None as cluster_id since containers came from multiple clusters
+            return _do_import(to_import, data)
+
+        if not cluster_id and not selected_ids:
+            # Import-all with no cluster — discover from all clusters
+            clusters = get_all_proxmox_clusters()
+            if not clusters:
+                return jsonify({'success': False, 'message': 'No Proxmox clusters configured.'}), 400
+            discovered = _discover_from_all_clusters(clusters)
+        elif cluster_id:
+            # Import from a specific cluster — rediscover to get current state
             cluster = get_proxmox_cluster_by_id(cluster_id)
             if not cluster:
                 return jsonify({'success': False, 'message': f'Cluster {cluster_id} not found'}), 404
             discovered = container_manager.discover_from_cluster(cluster)
-        else:
+
+            # Apply the same 172.x filter during import as we do during discovery
+            ignore_172 = _get_global_config('ignore_172_networks', False)
+            if ignore_172:
+                discovered = [c for c in discovered if not (c.get('primary_ip') or '').startswith('172.')]
+
+            # Check selected IDs against post-filter results
+            if selected_ids is not None and len(selected_ids) > 0:
+                selected_set = set(str(s) for s in selected_ids)
+                to_import = [c for c in discovered if c['container_id'] in selected_set]
+                cluster_name = cluster.get('name', cluster_id)
+                if not to_import:
+                    return jsonify({
+                        'success': False,
+                        'message': f'None of the {len(selected_set)} selected container(s) were found on cluster "{cluster_name}" during import. This may mean the containers were stopped or deleted since discovery, or their IP addresses changed. Try clicking "Discover" again.',
+                    }), 400
+                return _do_import(to_import, data)
+        elif data.get('host'):
+            # Inline credentials — discover fresh from the supplied host
             discovered = container_manager.discover_containers_from_proxmox(
                 proxmox_host=data['host'],
                 proxmox_user=data.get('user'),
@@ -277,36 +368,71 @@ def proxmox_import():
                 token_name=data.get('token_name'),
                 token_value=data.get('token_value'),
             )
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'No cluster configured and no inline credentials provided. Please save a cluster first or use inline discovery.',
+            }), 400
 
         if not discovered:
-            return jsonify({'success': False, 'message': 'No containers discovered'})
+            return jsonify({'success': False, 'message': f'All configured clusters returned no containers.'}), 400
 
-        # Filter by selected IDs
-        selected_ids = data.get('container_ids')  # None means all
-        if selected_ids is not None and len(selected_ids) > 0:
-            selected_set = set(str(s) for s in selected_ids)
-            to_import = [c for c in discovered if c['container_id'] in selected_set]
-        else:
-            to_import = discovered
+        # Pick a cluster_id for tracking (use the one that contributed most)
+        first_cluster = get_proxmox_clusters_by_name([c['cluster_name'] for c in discovered]).get(list(set(c['cluster_name'] for c in discovered))[0], {}).get('id') if discovered else None
 
-        default_user = get_default_ssh_user()
-        result = container_manager.import_proxmox_containers(
-            to_import,
-            ssh_user=data.get('ssh_user', default_user),
-            ssh_port=int(data.get('ssh_port', 22)),
-            cluster_id=cluster_id,
-        )
-
-        return jsonify({
-            'success': True,
-            'imported_count': result['imported'],
-            'skipped_count': result['skipped'],
-            'errors': result['errors'],
-        })
+        return _do_import(discovered, data, first_cluster)
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+def _discover_from_all_clusters(clusters):
+    """Discover containers from all configured clusters and return merged list."""
+    from .proxmox_api import discover_from_cluster
+
+    all_containers = []
+    ignore_172 = _get_global_config('ignore_172_networks', False)
+
+    for cluster in clusters:
+        if not cluster or not isinstance(cluster, dict):
+            continue
+        try:
+            containers = discover_from_cluster(cluster)
+            for c in containers:
+                c['cluster_id'] = cluster['id']
+                c['cluster_name'] = cluster['name']
+            all_containers.extend(containers)
+        except Exception:
+            pass
+
+    if ignore_172:
+        all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
+    return all_containers
+
+
+def _get_proxmox_clusters_by_name(names):
+    """Look up clusters by name, return dict of name -> cluster."""
+    from .database import get_all_proxmox_clusters
+    return {c['name']: c for c in get_all_proxmox_clusters() if c['name'] in names}
+
+
+def _do_import(discovered, data, cluster_id=None):
+    """Common import logic shared by single-cluster and multi-cluster imports."""
+    default_user = get_default_ssh_user()
+    result = container_manager.import_proxmox_containers(
+        discovered,
+        ssh_user=data.get('ssh_user', default_user),
+        ssh_port=int(data.get('ssh_port', 22)),
+        cluster_id=cluster_id,
+    )
+
+    return jsonify({
+        'success': True,
+        'imported_count': result['imported'],
+        'skipped_count': result['skipped'],
+        'errors': result['errors'],
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -635,10 +761,14 @@ def discover_all_clusters():
 
         clusters = get_all_proxmox_clusters()
         if not clusters:
-            return jsonify({'success': False, 'message': 'No Proxmox clusters configured'})
+            return jsonify({'success': False, 'containers': [], 'message': 'No Proxmox clusters configured'}), 400
 
         all_containers = []
+        failed_clusters = []
         for cluster in clusters:
+            if not cluster or not isinstance(cluster, dict):
+                logger.warning(f"Skipping invalid cluster entry: {cluster!r}")
+                continue
             try:
                 containers = discover_from_cluster(cluster)
                 for c in containers:
@@ -648,7 +778,18 @@ def discover_all_clusters():
                 logger.info(f"Discovered {len(containers)} container(s) from cluster '{cluster['name']}'")
             except Exception as e:
                 logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
+                failed_clusters.append(cluster['name'])
 
+        # If all credential-bearing clusters failed, report it
+        cred_count = sum(1 for c in clusters if isinstance(c, dict) and (c.get('token_value') or c.get('password')))
+        if not all_containers and cred_count > 0 and not failed_clusters:
+            # No containers but no failures either — possibly empty clusters or 172.x filter removed everything
+            pass  # fall through to return
+        elif not all_containers and failed_clusters and cred_count > 0:
+            return jsonify({
+                'success': False,
+                'message': f'All {cred_count} cluster(s) with credentials returned no containers. Failed clusters: {", ".join(failed_clusters)}.',
+            }), 400
         # Filter out 172.x IPs if global setting is enabled
         ignore_172 = _get_global_config('ignore_172_networks', False)
         filtered_count = 0
@@ -661,7 +802,23 @@ def discover_all_clusters():
             all_containers = [c for c in all_containers if not (c.get('primary_ip') or '').startswith('172.')]
             filtered_count = before - len(all_containers)
 
-        return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters), 'filtered_172': filtered_count})
+        # If everything was filtered out, report it so the user knows
+        if not all_containers and cred_count > 0 and filtered_count > 0:
+            return jsonify({
+                'success': False,
+                'message': f'All {cred_count} cluster(s) returned containers, but they were all filtered (172.x IP range). Disable the filter in settings to import them.',
+            }), 400
+
+        if not all_containers and cred_count > 0:
+            return jsonify({
+                'success': False,
+                'message': f'All {cred_count} cluster(s) returned no containers. The clusters may have no running LXC containers or discovery returned an empty result.',
+            }), 400
+
+        imported = get_all_containers()
+        imported_ids = [c['container_id'] for c in imported]
+
+        return jsonify({'success': True, 'containers': all_containers, 'clusters_checked': len(clusters), 'filtered_172': filtered_count, 'imported_ids': imported_ids})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
     except Exception as e:

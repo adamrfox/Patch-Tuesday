@@ -154,6 +154,9 @@
         .status-dot.updated {
             background-color: #28a745;
         }
+        .status-dot.stopped {
+            background-color: #fd7e14;
+        }
         .status-dot.never {
             background-color: #6c757d;
         }
@@ -200,10 +203,24 @@
             <h2>Dashboard</h2>
 
             <div class="card">
-                <h3>System Status</h3>
-                <p><strong>Total Containers:</strong> {{ container_count }}</p>
-                <p><strong>Containers with Updates:</strong> {{ containers_with_updates }}</p>
-                <p><strong>Successfully Updated (Last 24h):</strong> {{ successful_updates }}</p>
+                <h3>Container Status
+                    <span style="font-size:0.75em;color:#6c757d;margin-left:12px;font-weight:normal;" id="dashboardRefreshTs"></span>
+                    <button onclick="loadDashboardStatus()" style="float:right;font-size:0.85em;padding:4px 12px;background:#6c757d;border:none;color:white;border-radius:4px;cursor:pointer;" title="Refresh status">↻ Refresh</button>
+                </h3>
+                <table id="dashboardContainersTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Container ID</th>
+                            <th>Status</th>
+                            <th>Last Updated</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashboardTableBody">
+                    </tbody>
+                </table>
+                <p id="dashboardNoContainers" style="color:#6c757d;margin-top:10px;">No containers configured.</p>
             </div>
 
             <div class="card">
@@ -578,8 +595,8 @@
                     </tbody>
                 </table>
                 <div style="margin-top:15px;display:flex;gap:10px;align-items:center;">
-                    <button class="btn-success" onclick="importAllDiscovered()">Import All</button>
-                    <button class="btn-success" onclick="importSelectedDiscovered()">Import Selected</button>
+                    <button class="btn-success" id="importAllBtn" onclick="importAllDiscovered()">Import All</button>
+                    <button class="btn-success" id="importSelectedBtn" onclick="importSelectedDiscovered()">Import Selected</button>
                     <span style="color:#6c757d;">SSH user:</span>
                     <input type="text" id="discovery_ssh_user" placeholder="(uses default)" style="width:120px;">
                     <span style="color:#6c757d;font-size:0.85em;" id="importClusterHint"></span>
@@ -690,8 +707,8 @@
                 fetch(`/container/${containerId}`, { method: 'DELETE' })
                     .then(response => response.json())
                     .then(data => {
-                        alert('Container removed successfully');
-                        location.reload();
+                        const row = document.querySelector(`tr[data-id="${containerId}"]`);
+                        if (row) row.remove();
                     })
                     .catch(error => {
                         console.error('Error:', error);
@@ -725,7 +742,9 @@
 
                 // Update last-updated cell
                 const updatedCell = row.querySelector('.last-updated-cell');
-                if (s.is_patching) {
+                if (s.is_stopped) {
+                    updatedCell.innerHTML = '<span class="status-dot stopped"></span> Container stopped';
+                } else if (s.is_patching) {
                     updatedCell.innerHTML = '<span class="status-dot running"></span> Patching…';
                 } else if (s.last_updated) {
                     try {
@@ -742,6 +761,62 @@
         }
 
         // Refresh container status whenever the Containers tab is shown
+        function loadDashboardStatus() {
+            const tsEl = document.getElementById('dashboardRefreshTs');
+            fetch('/api/containers/status')
+                .then(response => response.json())
+                .then(data => renderDashboardTable(data))
+                .catch(error => console.error('Error loading dashboard status:', error));
+        }
+
+        function renderDashboardTable(statuses) {
+            const tbody = document.getElementById('dashboardTableBody');
+            const noContainers = document.getElementById('dashboardNoContainers');
+            if (!statuses || statuses.length === 0) {
+                tbody.innerHTML = '';
+                noContainers.style.display = 'block';
+                return;
+            }
+            noContainers.style.display = 'none';
+
+            let html = '';
+            for (const s of statuses) {
+                const statusClass = s.is_stopped ? 'stopped' :
+                    (s.is_patching ? 'running' :
+                    (s.last_updated ? 'updated' : 'never'));
+                const dot = '<span class="status-dot ' + statusClass + '"></span>';
+
+                let timeHtml = '';
+                if (s.is_stopped) {
+                    timeHtml = '<span class="status-dot stopped"></span> Stopped';
+                } else if (s.is_patching) {
+                    timeHtml = '<span class="status-dot running"></span> Patching…';
+                } else if (s.last_updated) {
+                    try {
+                        const d = new Date(s.last_updated);
+                        timeHtml = dot + ' ' + esc(d.toLocaleString());
+                    } catch {
+                        timeHtml = dot + ' —';
+                    }
+                } else {
+                    timeHtml = '<span class="status-dot never"></span> Never';
+                }
+
+                const statusLabel = s.is_stopped ? 'Stopped' :
+                    (s.is_patching ? 'Patching…' :
+                    (s.status.charAt(0).toUpperCase() + s.status.slice(1)));
+                html += '<tr>'
+                    + '<td>' + esc(s.name) + '</td>'
+                    + '<td>' + esc(s.container_id) + '</td>'
+                    + '<td class="status-' + s.status + '">' + statusLabel + '</td>'
+                    + '<td>' + timeHtml + '</td>'
+                    + '<td><button onclick="patchContainer(' + s.id + ')">Patch</button></td>'
+                    + '</tr>';
+            }
+            tbody.innerHTML = html;
+
+            if (tsEl) tsEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+        }
 
         function loadHistory() {
             const containerId = document.getElementById('historyContainerSelect').value;
@@ -912,6 +987,9 @@
             // Always clear first — prevents old rows from corrupting cell indices.
             while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
 
+            // Build a fast lookup of already-imported container IDs
+            const _importedIds = new Set((containers._importedIds) ? containers._importedIds : []);
+
             if (containers.length === 0) {
                 // DNS or auth failed — show a helpful message.
                 const tr = document.createElement('tr');
@@ -948,9 +1026,12 @@
                 const tr = document.createElement('tr');
                 const ips = c.all_ips && c.all_ips.length > 0 ? c.all_ips.join(', ') : 'N/A';
                 const clusterCell = hasClusterInfo ? `<td data-field="6">${esc(c.cluster_name || '?')}</td>` : '<td data-field="6" style="display:none;"></td>';
+                const isImported = _importedIds.has(String(c.container_id));
+                const chkDisabled = isImported ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : '';
+                const alreadyLabel = isImported ? '<span style="margin-left:4px;color:#6c757d;font-size:0.85em;">already imported</span>' : '';
 
                 tr.innerHTML = `
-                    <td><input type="checkbox" class="discoveryChk" value="${c.container_id}"></td>
+                    <td><input type="checkbox" class="discoveryChk" value="${c.container_id}" ${chkDisabled}>${alreadyLabel}</td>
                     <td data-field="1">${c.container_id}</td>
                     <td data-field="2">${c.name}</td>
                     <td data-field="3" class="status-${c.status}">${c.status || 'unknown'}</td>
@@ -980,12 +1061,18 @@
                 document.getElementById('importClusterHint').textContent = `→ will save to cluster: ${containers[0].cluster_name}`;
             } else {
                 _importClusterId = null;
-                document.getElementById('importClusterHint').textContent = '';
+                // Multi-cluster: hint that import discovers from all configured clusters
+                if (containers.length > 0) {
+                    const clusterNames = [...clusters];
+                    document.getElementById('importClusterHint').textContent = `→ will discover from ${clusterNames.length} cluster(s)`;
+                } else {
+                    document.getElementById('importClusterHint').textContent = '';
+                }
             }
         }
 
         function toggleSelectAll(checkbox) {
-            const chks = document.querySelectorAll('.discoveryChk');
+            const chks = document.querySelectorAll('.discoveryChk:not([disabled])');
             for (const chk of chks) {
                 chk.checked = checkbox.checked;
             }
@@ -1023,14 +1110,28 @@
         }
 
         function importAllDiscovered() {
+            const btn = document.getElementById('importAllBtn');
+            btn.disabled = true;
+            btn.textContent = 'Importing…';
+            document.getElementById('discoveryResultMessage').innerHTML =
+                '<span style="color:#856404;">⏳ Importing all containers…</span>';
+
             fetch('/proxmox/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(getImportAuthBody())
             })
             .then(response => response.json())
-            .then(showResultMessage)
-            .catch(err => alert('Error: ' + err.message));
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = 'Import All';
+                showResultMessage(data);
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.textContent = 'Import All';
+                alert('Error: ' + err.message);
+            });
         }
 
         function importSelectedDiscovered() {
@@ -1039,14 +1140,41 @@
                 alert('Select at least one container.');
                 return;
             }
+
+            // Show immediate feedback before the network round-trip completes.
+            const btn = document.getElementById('importSelectedBtn');
+            btn.disabled = true;
+            btn.textContent = `Importing ${selected.length}…`;
+            const msgEl = document.getElementById('discoveryResultMessage');
+            msgEl.innerHTML =
+                `<span style="color:#856404;">⏳ Importing ${selected.length} selected container(s)…</span>`;
+
+            // Send the originally discovered containers so the backend can match
+            // by ID without re-discovering (which may return different results).
+            const body = getImportAuthBody();
+            delete body.cluster_id;
+            body.container_ids = selected;
+            // Pass discovered containers from the current discovery session
+            if (typeof _discoveredContainers !== 'undefined' && _discoveredContainers.length > 0) {
+                body.discovered = _discoveredContainers;
+            }
+
             fetch('/proxmox/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ...getImportAuthBody(), container_ids: selected })
+                body: JSON.stringify(body)
             })
             .then(response => response.json())
-            .then(showResultMessage)
-            .catch(err => alert('Error: ' + err.message));
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = 'Import Selected';
+                showResultMessage(data);
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.textContent = 'Import Selected';
+                msgEl.innerHTML = `<span style="color:red;">✗ Error: ${err.message}</span>`;
+            });
         }
 
         // -----------------------------------------------------------------------
@@ -1214,9 +1342,11 @@
                         alert('Discovery failed: ' + data.message);
                         return;
                     }
-                    showDiscoveryResults(data.containers, `${data.clusters_checked} cluster(s)`, data.filtered_172);
-                    // Store the cluster_id hint for import
-                    _importClusterId = null;  // Will be inferred from the first container
+                    // Defensive: ensure containers is an array (can fail if backend returns unexpected format)
+                    const discovered = Array.isArray(data.containers) ? data.containers : [];
+                    discovered._importedIds = data.imported_ids || [];
+                    showDiscoveryResults(discovered, `${data.clusters_checked} cluster(s)`, data.filtered_172);
+                    // _importClusterId is set inside showDiscoveryResults based on whether all containers share one cluster
                 })
                 .catch(err => {
                     btn.disabled = false;
@@ -1762,6 +1892,7 @@
             // Refresh default SSH user on every tab switch so all tabs stay in sync
             loadDefaultSshUser();
             _origSwitchTab.call(this, tabName);
+            if (tabName === 'dashboard') loadDashboardStatus();
             if (tabName === 'groups') loadGroups();
             if (tabName === 'containers') loadContainerStatus();
             if (tabName === 'scheduling') updateActiveSchedulesTable();
@@ -1841,6 +1972,7 @@
         loadClusters();
         loadContainerStatus();
         loadDiscoverySettings();
+        loadDashboardStatus();
 
     </script>
 </body>

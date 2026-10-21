@@ -404,6 +404,36 @@ class PatchEngine:
         if not container['ssh_host']:
             return {'error': 'No SSH host configured'}
 
+        # ------------------------------------------------------------------
+        # Early abort for stopped containers — check live Proxmox status
+        # ------------------------------------------------------------------
+        try:
+            from .proxmox_api import _find_node_for_container, get_lxc_container_status
+            proxmox_node, proxmox_vmid = _find_node_for_container(container)
+            if proxmox_node and proxmox_vmid:
+                status_result = get_lxc_container_status(proxmox_node, proxmox_vmid)
+                if status_result['success'] and status_result.get('status') == 'stopped':
+                    logger.info(f"Container {container['name']} is stopped on Proxmox — skipping")
+                    save_update_history({
+                        'container_id': container_id,
+                        'status': 'skipped',
+                        'start_time': datetime.now(),
+                        'end_time': datetime.now(),
+                        'packages_updated': 'None (container stopped)',
+                        'output': '',
+                        'error_message': f'Container "{container["name"]}" is stopped in Proxmox — skipped',
+                    })
+                    return {
+                        'success': False,
+                        'error': f'Container "{container["name"]}" is stopped',
+                        'start_time': datetime.now(),
+                        'end_time': datetime.now(),
+                        'skipped': True,  # signal to frontend / dashboard
+                    }
+        except Exception:
+            # If live status check fails, fall through to SSH attempt
+            pass
+
         self.register_start(container_id)
         start_time = datetime.now()
         packages_updated = []
@@ -483,18 +513,22 @@ class PatchEngine:
                 proxmox_node, proxmox_vmid = _find_node_for_container(container)
                 if proxmox_node:
                     snapshot_name = f"ptu_{int(time.time())}"
+                    _log(f"Creating Proxmox snapshot (name: {snapshot_name})", "header")
                     snap_result = create_lxc_snapshot(
                         proxmox_node, proxmox_vmid, snapshot_name
                     )
                     if snap_result['success']:
+                        _log(f"Proxmox snapshot '{snapshot_name}' created", "snapshot")
                         logger.info(f"Proxmox snapshot '{snapshot_name}' created for {container['name']}")
                     else:
+                        _log(f"Snapshot creation failed: {snap_result.get('error', 'unknown')}", "snapshot_err")
                         logger.warning(
                             f"Snapshot creation failed for {container['name']}: "
                             f"{snap_result.get('error', 'unknown')}"
                         )
                         snapshot_name = None  # disable rollback if snapshot failed
                 else:
+                    _log(f"No Proxmox node info — skipping snapshot", "snapshot_skip")
                     logger.info(
                         f"No Proxmox node info for {container['name']} — skipping snapshot"
                     )
@@ -616,7 +650,9 @@ class PatchEngine:
                     try:
                         from .proxmox_api import delete_lxc_snapshot
                         delete_lxc_snapshot(proxmox_node, proxmox_vmid, snapshot_name)
+                        _log(f"Cleaned up snapshot '{snapshot_name}' (no updates needed)", "snapshot")
                     except Exception as e:
+                        _log(f"Could not clean up snapshot '{snapshot_name}': {e}", "snapshot_err")
                         logger.warning(f"Could not clean up snapshot {snapshot_name}: {e}")
                 self.register_done(container_id)
                 _flush_remote_log(result)
@@ -663,17 +699,20 @@ class PatchEngine:
                         from .proxmox_api import rollback_lxc_snapshot
                         rb = rollback_lxc_snapshot(proxmox_node, proxmox_vmid, snapshot_name)
                         if rb['success']:
+                            _log(f"Rollback to snapshot '{snapshot_name}' succeeded", "snapshot")
                             logger.info(
                                 f"Rollback successful for {container['name']} "
                                 f"to snapshot {snapshot_name}"
                             )
                             error_message += " [rolled back]"
                         else:
+                            _log(f"Rollback to snapshot '{snapshot_name}' failed: {rb.get('error', 'unknown')}", "snapshot_err")
                             logger.error(
                                 f"Rollback FAILED for {container['name']}: "
                                 f"{rb.get('error', 'unknown')}"
                             )
                     except Exception as e:
+                        _log(f"Rollback exception for '{snapshot_name}': {e}", "snapshot_err")
                         logger.error(f"Rollback exception for {container['name']}: {e}")
 
                 self.register_done(container_id)
@@ -695,8 +734,10 @@ class PatchEngine:
                 try:
                     from .proxmox_api import delete_lxc_snapshot
                     delete_lxc_snapshot(proxmox_node, proxmox_vmid, snapshot_name)
+                    _log(f"Cleaned up snapshot '{snapshot_name}'", "snapshot")
                     logger.info(f"Cleaned up snapshot {snapshot_name} for {container['name']}")
                 except Exception as e:
+                    _log(f"Could not clean up snapshot '{snapshot_name}': {e}", "snapshot_err")
                     logger.warning(
                         f"Could not clean up snapshot {snapshot_name}: {e}"
                     )

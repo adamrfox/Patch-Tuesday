@@ -204,6 +204,25 @@ def get_update_history(container_id, limit=50):
         LIMIT ?
     ''', (container_id, limit)).fetchall()
 
+def get_recent_updates(limit=20):
+    """Return the latest update-history rows across all containers, with container name.
+
+    Returns list of dicts with keys: id, container_id, container_name, status,
+    start_time, end_time, packages_updated, output, error_message.
+    """
+    db = get_db()
+    rows = db.execute('''
+        SELECT uh.id, uh.container_id, c.name AS container_name,
+               uh.status, uh.start_time, uh.end_time,
+               uh.packages_updated, uh.output, uh.error_message
+        FROM update_history uh
+        JOIN containers c ON c.id = uh.container_id
+        ORDER BY uh.start_time DESC
+        LIMIT ?
+    ''', (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_configuration(key):
     """Get configuration value"""
     db = get_db()

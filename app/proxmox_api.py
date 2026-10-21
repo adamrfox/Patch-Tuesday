@@ -700,6 +700,60 @@ def delete_lxc_snapshot(node: str, vmid: str, snapshot_name: str) -> dict:
     return {'success': False, 'error': f'Could not connect to any configured cluster for snapshot deletion'}
 
 
+def get_lxc_container_status(node: str, vmid: str) -> dict:
+    """Return the current Proxmox status of a container.
+
+    Args:
+        node: Proxmox node name (e.g. 'pve01').
+        vmid: Container VMID (string or int).
+
+    Returns:
+        {'success': True, 'status': 'running'|'stopped'|...} or
+        {'success': False, 'error': ...}.
+    """
+    try:
+        from .database import get_all_proxmox_clusters
+        clusters = get_all_proxmox_clusters()
+    except Exception:
+        clusters = []
+
+    if not clusters:
+        return {'success': False, 'error': 'No Proxmox clusters configured'}
+
+    for cluster in clusters:
+        has_token = bool(cluster.get('token_value'))
+        has_password = bool(cluster.get('password'))
+        if not has_token and not has_password:
+            continue
+
+        proxmox_host = cluster.get('host', '') or ''
+        proxmox_port = int(cluster.get('port', 8006))
+        user = cluster.get('user', '') or ''
+        token_name = cluster.get('token_name', '') or ''
+        token_value = cluster.get('token_value', '') or ''
+        password = cluster.get('password', '') or ''
+        verify_ssl = bool(cluster.get('verify_ssl', False))
+
+        base_url = f'https://{proxmox_host}:{proxmox_port}'
+        full_user = user if '!' in user else None
+        auth_key = token_name if has_token else None
+
+        try:
+            path = f'/nodes/{node}/lxc/{vmid}/status/current'
+            resp = _api_request(
+                'GET', base_url, full_user, auth_key,
+                token_value if has_token else None, verify_ssl, path,
+                data=password if not has_token else None,
+            )
+            if isinstance(resp, dict):
+                return {'success': True, 'status': resp.get('status', 'unknown')}
+        except Exception as exc:
+            logger.debug(f"Status lookup on cluster '{cluster.get('name', '?')}' failed: {exc}")
+            continue
+
+    return {'success': False, 'error': 'Could not connect to any configured cluster'}
+
+
 def _find_node_for_container(container):
     """Heuristic: find the Proxmox node name for a container.
 

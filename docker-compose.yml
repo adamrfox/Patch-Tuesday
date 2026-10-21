@@ -10,4 +10,4 @@ services:
       # Mount host SSH key so the app can authenticate to containers via SSH
       - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     environment:
-      - TZ=America/Los_Angeles
+      - TZ=America/New_York
