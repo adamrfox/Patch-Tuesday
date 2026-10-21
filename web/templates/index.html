@@ -109,6 +109,12 @@
             margin-bottom: 5px;
             font-weight: bold;
         }
+        input[type="checkbox"] {
+            width: auto;
+            padding: 0;
+            margin: 0 6px 0 0;
+            vertical-align: middle;
+        }
         input, select {
             width: 100%;
             padding: 8px;
@@ -339,11 +345,11 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="schedule_enabled"> Enable Schedule</label>
+                        <label style="display: inline-flex; align-items: center;"><input type="checkbox" id="schedule_enabled"> Enable Schedule</label>
                     </div>
                     <!-- Auto-sync only shown for default scope -->
                     <div class="form-group" id="autoSyncGroup" style="display:none;">
-                        <label><input type="checkbox" id="schedule_auto_sync"> Sync from configured Proxmox clusters before patches</label>
+                        <label style="display: inline-flex; align-items: center;"><input type="checkbox" id="schedule_auto_sync"> Sync from configured Proxmox clusters before patches</label>
                     </div>
                     <div class="form-group">
                         <label for="schedule_type">Schedule Type:</label>
@@ -394,7 +400,7 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="individual_enabled"> Enable Schedule</label>
+                        <label style="display: inline-flex; align-items: center;"><input type="checkbox" id="individual_enabled"> Enable Schedule</label>
                     </div>
                     <div class="form-group">
                         <label for="individual_schedule_type">Schedule Type:</label>
@@ -450,15 +456,19 @@
                         <tbody>
                             {% for schedule in schedules %}
                             <tr>
-                                <td>{{ schedule.container_name or ('Group: ' + schedule.group_name) }}</td>
+                                <td>{{ schedule.container_name or ('Group: ' + (schedule.group_name if schedule.group_name else '?')) }}</td>
                                 <td>{{ schedule.schedule_type.title() }}</td>
                                 <td>{{ schedule.time_of_day }}</td>
                                 <td>{{ schedule.maintenance_window_start or 'N/A' }} - {{ schedule.maintenance_window_end or 'N/A' }}</td>
                                 <td>{{ 'Enabled' if schedule.enabled else 'Disabled' }}</td>
-                                <td>{{ schedule.schedule_source | replace('default', 'Default') if schedule.schedule_source else 'individual' }}</td>
+                                <td>{{ (schedule.schedule_source or 'individual').title() }}</td>
                                 <td>
-                                    <button onclick="toggleSchedule({{ schedule.id }})">Toggle</button>
-                                    <button class="btn-danger" onclick="deleteSchedule({{ schedule.id }})">Delete</button>
+                                    {% if schedule.id is none %}
+                                        <span style="color:#888;font-size:0.85em;">config only</span>
+                                    {% else %}
+                                        <button onclick="toggleSchedule({{ schedule.id }})">Toggle</button>
+                                        <button class="btn-danger" onclick="deleteSchedule({{ schedule.id }})">Delete</button>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -1817,7 +1827,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        enabled: true,
+                        enabled: enabled,
                         schedule_type: document.getElementById('schedule_type').value,
                         time_of_day: document.getElementById('time_of_day').value,
                         day_of_week: parseInt(document.getElementById('day_of_week').value),

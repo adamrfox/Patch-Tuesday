@@ -576,25 +576,25 @@ def get_active_schedules():
 
     Each dict mirrors the schedules table columns plus two extras:
       - schedule_source: 'individual', 'group', or 'default'
-      - group_name: present for group schedules (or None)
+      - group_name: present for group/default scopes (or None)
     """
     db = get_db()
 
-    # --- Individual schedules ---
+    # --- Individual schedules (one row per container) ---
     individual = db.execute('''
         SELECT s.*, 'individual' AS schedule_source, NULL AS group_name
         FROM schedules s
         WHERE s.container_id IS NOT NULL AND s.enabled = 1
     ''').fetchall()
 
+    results = [dict(r) for r in individual]
+
     # Collect container ids that have individual schedules
     individual_ids = {r['container_id'] for r in individual}
 
-    results = [dict(r) for r in individual]
-
-    # --- Group schedules ---
+    # --- Group schedules (one row per group, showing member count) ---
     group_schedules = db.execute('''
-        SELECT s.*, 'group' AS schedule_source, g.name AS group_name
+        SELECT s.*, g.id AS group_id, g.name AS group_name
         FROM schedules s
         JOIN groups g ON g.id = s.group_id
         WHERE s.group_id IS NOT NULL AND s.enabled = 1
@@ -602,23 +602,43 @@ def get_active_schedules():
 
     for gs in group_schedules:
         members = db.execute('''
-            SELECT c.* FROM containers c
-            JOIN group_members gm ON gm.container_id = c.id
+            SELECT COUNT(*) AS cnt FROM group_members gm
+            JOIN containers c ON c.id = gm.container_id
             WHERE gm.group_id = ?
-        ''', (gs['group_id'],)).fetchall()
+              AND c.id NOT IN (SELECT container_id FROM schedules WHERE container_id IS NOT NULL AND enabled = 1)
+        ''', (gs['group_id'],)).fetchone()
+        member_count = members['cnt'] if members else 0
 
-        for member in members:
-            if member['id'] not in individual_ids:
-                row = dict(gs)
-                row['container_id'] = member['id']          # target container for this iteration
-                row['container_name'] = member['name']      # display name
-                row['schedule_type'] = gs['schedule_type']  # schedule info from the group schedule
-                row['time_of_day'] = gs['time_of_day']
-                row['day_of_week'] = gs['day_of_week']
-                row['enabled'] = gs['enabled']
-                results.append(row)
+        # Count containers with individual overrides in this group
+        overrides = db.execute('''
+            SELECT COUNT(*) AS cnt FROM schedules s
+            WHERE s.container_id IS NOT NULL AND s.enabled = 1
+              AND s.container_id IN (SELECT container_id FROM group_members WHERE group_id = ?)
+        ''', (gs['group_id'],)).fetchone()
+        override_count = overrides['cnt'] if overrides else 0
 
-    # --- Default schedule (for ungrouped containers without an individual schedule) ---
+        display_name = f"Group: {gs['group_name']} ({member_count} members)"
+        if member_count == 0 and override_count > 0:
+            # Group has no non-individual members — still show the group schedule
+            display_name = f"Group: {gs['group_name']} (only overrides, {override_count})"
+        elif member_count == 0 and override_count == 0:
+            display_name = f"Group: {gs['group_name']} (empty)"
+
+        results.append({
+            'id': gs['id'],                  # real DB row — toggle/delete works
+            'container_id': None,            # no single target
+            'container_name': display_name,  # shows scope
+            'schedule_source': 'group',
+            'group_name': gs['group_name'],
+            'schedule_type': gs.get('schedule_type', 'daily'),
+            'time_of_day': gs.get('time_of_day'),
+            'day_of_week': int(gs.get('day_of_week', 1)),
+            'enabled': bool(gs.get('enabled', True)),
+            'maintenance_window_start': gs.get('maintenance_window_start'),
+            'maintenance_window_end': gs.get('maintenance_window_end'),
+        })
+
+    # --- Default schedule (one row representing all ungrouped containers) ---
     default_cfg = get_default_schedule()
     if default_cfg and default_cfg.get('enabled'):
         # Find containers with no individual schedule AND not in any group
@@ -629,20 +649,28 @@ def get_active_schedules():
               AND c.id NOT IN ({})
         '''.format(all_with_individual)).fetchall()
 
-        for container in ungrouped_rows:
-            row = {
-                'container_id': container['id'],
-                'container_name': container['name'],
-                'schedule_source': 'default',
-                'group_name': None,
-                'schedule_type': default_cfg.get('schedule_type', 'daily'),
-                'time_of_day': default_cfg.get('time_of_day'),
-                'day_of_week': int(default_cfg.get('day_of_week', 1)),
-                'enabled': default_cfg.get('enabled', True),
-                'maintenance_window_start': default_cfg.get('maintenance_window_start'),
-                'maintenance_window_end': default_cfg.get('maintenance_window_end'),
-            }
-            results.append(row)
+        if ungrouped_rows:
+            display_name = f"Default (ungrouped, {len(ungrouped_rows)} containers)"
+        else:
+            display_name = "Default (ungrouped, no ungrouped containers)"
+
+        results.append({
+            'id': None,  # virtual row — no real DB record
+            'container_id': None,
+            'container_name': display_name,
+            'schedule_source': 'default',
+            'group_name': None,
+            'schedule_type': default_cfg.get('schedule_type', 'daily'),
+            'time_of_day': default_cfg.get('time_of_day'),
+            'day_of_week': int(default_cfg.get('day_of_week', 1)),
+            'enabled': True,
+            'maintenance_window_start': default_cfg.get('maintenance_window_start'),
+            'maintenance_window_end': default_cfg.get('maintenance_window_end'),
+        })
+
+    # Sort: enabled first, then by source priority (individual > group > default)
+    source_order = {'individual': 0, 'group': 1, 'default': 2}
+    results.sort(key=lambda r: (not r.get('enabled', False), source_order.get(r.get('schedule_source', ''), 9)))
 
     return results
 
