@@ -3,7 +3,7 @@ Web routes for the patch management system
 """
 from flask import Blueprint, render_template, request, jsonify, redirect, url_for
 from .database import (get_all_containers, get_container_by_id, save_container,
-                      delete_container, get_update_history, get_all_schedules,
+                      delete_container, get_update_history as db_get_update_history, get_all_schedules,
                       save_schedule, delete_schedule, get_schedule_by_container,
                       get_all_groups, get_group_by_id, save_group, delete_group,
                       get_group_members, get_all_groups_for_container,
@@ -176,7 +176,7 @@ def containers_status():
 def get_update_history(container_id):
     """Get update history for a container"""
     try:
-        updates = get_update_history(container_id)
+        updates = db_get_update_history(container_id)
         # Convert to list of dictionaries
         result = []
         for update in updates:
