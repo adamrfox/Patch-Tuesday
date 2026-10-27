@@ -176,8 +176,15 @@ def save_container(container_data):
     db.commit()
 
 def delete_container(container_id):
-    """Delete a container"""
+    """Delete a container and its dependent rows.
+
+    ``PRAGMA foreign_keys`` is not enabled in this app, so the schema's
+    ``ON DELETE CASCADE`` clauses never fire — clean up dependents by hand.
+    ``update_history`` is left in place as an audit trail.
+    """
     db = get_db()
+    db.execute('DELETE FROM group_members WHERE container_id = ?', (container_id,))
+    db.execute('DELETE FROM schedules WHERE container_id = ?', (container_id,))
     db.execute('DELETE FROM containers WHERE id = ?', (container_id,))
     db.commit()
 

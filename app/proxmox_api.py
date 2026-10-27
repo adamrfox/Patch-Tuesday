@@ -497,13 +497,23 @@ def discover_from_cluster(cluster):
 def sync_default_group():
     """Scan all configured clusters and sync the default group membership.
 
-    Returns:
-        dict with keys: added (list of new containers), removed (list of deleted names),
-                        skipped_not_running (int), errors (list)
-    """
-    from .database import get_all_proxmox_clusters, delete_container, get_default_schedule
+    * Adds running containers found on the clusters but missing from the DB.
+    * Links existing DB containers to the cluster they live on (so they can be
+      diffed in future syncs).
+    * Removes DB entries for containers that no longer exist on their synced
+      cluster.  Conservative on purpose: a container is only deleted when we
+      reached that cluster this run AND confirmed (any status) that it's gone.
 
-    result = {'added': [], 'removed': set(), 'skipped_not_running': 0, 'errors': []}
+    Returns:
+        dict with keys: added (list of new container names), removed (list of
+        deleted names), tagged (int of existing containers linked to a cluster),
+        skipped_not_running (int), errors (list)
+    """
+    from .database import (get_all_proxmox_clusters, delete_container,
+                           get_default_schedule, get_default_ssh_user)
+
+    result = {'added': [], 'removed': set(), 'skipped_not_running': 0,
+              'tagged': 0, 'errors': []}
 
     # Only sync if a default schedule is configured and enabled
     default_sched = get_default_schedule()
@@ -516,35 +526,64 @@ def sync_default_group():
         logger.info("No Proxmox clusters configured — skipping cluster sync")
         return result
 
-    # Build a set of all known container_ids across all clusters
-    known_containers = {}  # vmid -> discovered info
+    # Discover every container (any status) on each configured cluster.
+    # ok_clusters records which clusters we actually reached this run — we only
+    # trust a "container is gone" conclusion for a cluster whose discovery
+    # succeeded, so a transient API outage can never mass-delete containers.
+    ok_clusters = set()
+    cluster_seen = {}      # cluster_id -> {'vmids': set, 'names': set}
+    known_containers = {}  # vmid -> discovered info (running only, for adds)
     for cluster in clusters:
+        cid = cluster['id']
         try:
             containers = discover_from_cluster(cluster)
-            for c in containers:
-                if c['status'] != 'running':
-                    result['skipped_not_running'] += 1
-                    continue
-                known_containers[c['container_id']] = {
-                    'cluster_id': cluster['id'],
-                    'cluster_name': cluster['name'],
-                    **c,
-                }
         except Exception as e:
             logger.error(f"Error discovering from cluster '{cluster['name']}': {e}")
             result['errors'].append(f"{cluster['name']}: {e}")
+            continue
+        ok_clusters.add(cid)
+        seen = cluster_seen.setdefault(cid, {'vmids': set(), 'names': set()})
+        for c in containers:
+            if c['status'] != 'running':
+                result['skipped_not_running'] += 1
+            seen['vmids'].add(c['container_id'])
+            seen['names'].add(c['name'])
+            if c['status'] == 'running':
+                known_containers[c['container_id']] = {
+                    'cluster_id': cid,
+                    'cluster_name': cluster['name'],
+                    **c,
+                }
 
-    # Find containers in the DB that belong to any synced cluster
-    from .database import get_all_containers
-    all_db_containers = get_all_containers()
-    for container in all_db_containers:
-        cid = container.get('last_cluster_id')
-        if cid is not None and cid in {c['id'] for c in clusters}:
-            # This container came from a synced cluster
-            actual_vmid = container['container_id']
-            if actual_vmid not in known_containers:
-                # Container no longer exists on any cluster — hard delete it
-                logger.info(f"Removing deleted container: {container['name']} (vmid={actual_vmid})")
+    # For every managed container, link it to the cluster it lives on and drop
+    # it if it's confirmed gone from that cluster.
+    from .database import get_all_containers, save_container
+    for container in get_all_containers():
+        tagged_cid = container.get('last_cluster_id')
+
+        # 1) Link untagged containers to a cluster we can actually see them on.
+        if tagged_cid is None:
+            for cid, seen in cluster_seen.items():
+                if (container['container_id'] in seen['vmids']
+                        or container['name'] in seen['names']):
+                    save_container({**container, 'last_cluster_id': cid})
+                    result['tagged'] += 1
+                    logger.info(f"Linked existing container '{container['name']}' "
+                                f"(vmid={container['container_id']}) to cluster id={cid}")
+                    tagged_cid = cid
+                    break
+            else:
+                # Not seen on any reachable cluster — leave it alone (don't guess).
+                continue
+
+        # 2) Remove a container only when its own cluster was reached this run
+        #    and we confirmed it's gone there (matched by vmid or name).
+        if tagged_cid in ok_clusters:
+            seen = cluster_seen[tagged_cid]
+            if (container['container_id'] not in seen['vmids']
+                    and container['name'] not in seen['names']):
+                logger.info(f"Removing container gone from cluster: "
+                            f"{container['name']} (vmid={container['container_id']})")
                 delete_container(container['id'])
                 result['removed'].add(container['name'])
 
@@ -561,7 +600,7 @@ def sync_default_group():
                 'updated_needs': False,
                 'ssh_host': info.get('primary_ip'),
                 'ssh_port': 22,
-                'ssh_user': 'root',
+                'ssh_user': get_default_ssh_user(),
                 'snapshot_enabled': True,
                 'last_cluster_id': info['cluster_id'],
             }

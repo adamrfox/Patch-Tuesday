@@ -122,15 +122,24 @@ class Scheduler:
         # 3) Default schedule (ungrouped containers without individual schedules)
         cfg = get_default_schedule()
         if cfg and cfg.get('enabled'):
-            grouped = {r[0] for r in db.execute('SELECT container_id FROM group_members')}
-            default_ids = [c['id'] for c in get_all_containers()
-                           if c['id'] not in grouped and c['id'] not in individual_ids]
+            default_ids = self._default_group_ids()
             if default_ids:
                 targets.append(('default', cfg, default_ids))
             else:
                 logger.debug("Default schedule: no ungrouped containers — skipping")
 
         return targets
+
+    def _default_group_ids(self):
+        """Container ids covered by the default schedule: ungrouped containers
+        without their own individual schedule."""
+        from .database import get_db
+        db = get_db()
+        individual_ids = {r[0] for r in db.execute(
+            'SELECT container_id FROM schedules WHERE container_id IS NOT NULL AND enabled = 1')}
+        grouped = {r[0] for r in db.execute('SELECT container_id FROM group_members')}
+        return [c['id'] for c in get_all_containers()
+                if c['id'] not in grouped and c['id'] not in individual_ids]
 
     # ------------------------------------------------------------------
     # Due checking
@@ -199,6 +208,12 @@ class Scheduler:
                     sync_result = container_manager.sync_default_group()
                     logger.info(f"Cluster sync before default-group patches: "
                                 f"added={sync_result['added']}, removed={sync_result['removed']}")
+                    if sync_result['added']:
+                        # The target list above was resolved before the sync ran;
+                        # refresh it so containers just added are patched this pass.
+                        container_ids = self._default_group_ids()
+                        logger.info(f"Default-scope targets refreshed after sync: "
+                                    f"{len(container_ids)} container(s)")
                 except Exception as e:
                     logger.error(f"Auto-sync failed: {e}")
                 finally:
