@@ -15,6 +15,10 @@ def main_entry():
     # Register routes
     app.register_blueprint(main)
 
+    # Start the background patch scheduler (daemon thread, ticks every 60s)
+    from .scheduler import scheduler
+    scheduler.start(app)
+
     # Get port from environment or default to 5000
     port = int(os.environ.get('PORT', 5000))
 
