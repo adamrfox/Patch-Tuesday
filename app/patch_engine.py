@@ -83,6 +83,36 @@ class PatchEngine:
     def is_running(self, container_id):
         return container_id in self._active
 
+    @staticmethod
+    def _resolve_key_files(private_key_path=None):
+        """Resolve the SSH key files to try for authentication.
+
+        If an explicit key path is configured, use it — but if it does not
+        exist (e.g. a host-side path stored while running inside Docker),
+        warn and fall back to the default identity keys in common
+        locations instead of failing with a raw ENOENT from paramiko.
+
+        Returns a list of existing key file paths (may be empty).
+        """
+        if private_key_path:
+            if os.path.exists(private_key_path):
+                return [private_key_path]
+            logger.warning(
+                f"Configured SSH key {private_key_path!r} not found; "
+                "falling back to default identity keys"
+            )
+
+        home = os.path.expanduser('~')
+        key_dirs = [f'{home}/.ssh'] + \
+                   ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
+        candidates = []
+        for d in key_dirs:
+            for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
+                p = f'{d}/{k}'
+                if os.path.exists(p):
+                    candidates.append(p)
+        return candidates
+
     # ---------------------------------------------------------------
     # Live log file — see live_patch_<id>.log for real-time patch output
     # ---------------------------------------------------------------
@@ -115,20 +145,8 @@ class PatchEngine:
         """
         try:
             transport = paramiko.Transport((host, port))
-            key_kwargs = {}
-            if private_key_path:
-                key_kwargs['key_filename'] = [private_key_path]
-            else:
-                home = os.path.expanduser('~')
-                key_dirs = [f'{home}/.ssh'] + \
-                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
-                candidate_keys = []
-                for d in key_dirs:
-                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
-                        p = f'{d}/{k}'
-                        if os.path.exists(p):
-                            candidate_keys.append(p)
-                key_kwargs['key_filename'] = candidate_keys
+            key_files = self._resolve_key_files(private_key_path)
+            key_kwargs = {'key_filename': key_files} if key_files else {}
 
             transport.connect(username=user, **key_kwargs)
             sftp = paramiko.SFTPClient.from_transport(transport)
@@ -146,19 +164,9 @@ class PatchEngine:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             connect_kwargs = {'timeout': 5}
-            if private_key_path:
-                connect_kwargs['key_filename'] = [private_key_path]
-            else:
-                home = os.path.expanduser('~')
-                key_dirs = [f'{home}/.ssh'] + \
-                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
-                candidate_keys = []
-                for d in key_dirs:
-                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
-                        p = f'{d}/{k}'
-                        if os.path.exists(p):
-                            candidate_keys.append(p)
-                connect_kwargs['key_filename'] = candidate_keys
+            key_files = self._resolve_key_files(private_key_path)
+            if key_files:
+                connect_kwargs['key_filename'] = key_files
 
             ssh.connect(host, port=port, username=user, **connect_kwargs)
             ssh.exec_command(f'rm -f {remote_path}')
@@ -188,24 +196,11 @@ class PatchEngine:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-            # Build auth kwargs — prefer private key, fall back to default SSH keys
+            # Build auth kwargs — prefer configured key, fall back to default SSH keys
             connect_kwargs = {'timeout': timeout}
-            if private_key_path:
-                connect_kwargs['key_filename'] = [private_key_path]
-            else:
-                # Try the host's default identity keys and ssh-agent.
-                # When running as root, also look under common home dirs (e.g. /home/midway/).
-                import os as _os
-                home = _os.path.expanduser('~')
-                key_dirs = [f'{home}/.ssh'] + \
-                           ([f'/home/{u}/.ssh' for u in ['midway', 'appuser', 'flask']] if home == '/root' else [])
-                candidate_keys = []
-                for d in key_dirs:
-                    for k in ('id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'):
-                        p = f'{d}/{k}'
-                        if _os.path.exists(p):
-                            candidate_keys.append(p)
-                connect_kwargs['key_filename'] = candidate_keys
+            key_files = self._resolve_key_files(private_key_path)
+            if key_files:
+                connect_kwargs['key_filename'] = key_files
 
             ssh.connect(host, port=port, username=user, **connect_kwargs)
 
@@ -368,7 +363,8 @@ class PatchEngine:
             container['ssh_port'],
             container['ssh_user'],
             command,
-            timeout=300
+            timeout=300,
+            private_key_path=container.get('ssh_private_key_path'),
         )
 
         if not result['success']:
