@@ -6,7 +6,7 @@ import logging
 from .database import get_all_containers, get_container_by_id, save_container
 # We don't actually need to import execute_ssh_command here - it's used in patch_engine directly
 # The error message may have been misleading or from a cached version
-from .patch_engine import patch_engine
+from .patch_engine import patch_engine, is_local_host
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,9 @@ class ContainerManager:
 
     def test_ssh_connection(self, host, port, user):
         """Test SSH connection to container"""
+        # Local target (this app's own host) — always "reachable", no SSH needed
+        if is_local_host(host):
+            return True
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())

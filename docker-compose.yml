@@ -11,3 +11,7 @@ services:
       - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     environment:
       - TZ=America/New_York
+      # This host's own IP (LXC 122 / "patch-tuesday") — not visible from
+      # inside the container's network namespace, so declare it explicitly.
+      # Patches for this entry run locally instead of over SSH.
+      - PTU_LOCAL_HOSTS=192.168.86.190

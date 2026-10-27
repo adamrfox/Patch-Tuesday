@@ -12,8 +12,10 @@ import logging
 import subprocess
 import time
 import os
+import socket
 import threading
 import tempfile
+import ipaddress
 from datetime import datetime
 from .database import save_update_history, get_container_by_id
 
@@ -66,6 +68,97 @@ def _count_upgradable(dry_run_output: str) -> int:
                 logger.debug(f"Packages to remove (no upgrades): {count}")
                 return 0
     return 0
+
+
+def _get_local_ips() -> set:
+    """Return the set of IP addresses assigned to this host (as strings).
+
+    Combines loopback, hostname-derived addresses, and the IPv4 addresses
+    actually assigned to network interfaces. The interface scan matters on
+    Proxmox systems where /etc/hosts maps the hostname to 127.0.1.1 instead
+    of the real NIC address.
+    """
+    import fcntl
+    import struct
+
+    ips = set()
+    try:
+        ips.add(ipaddress.ip_loopback.compressed)
+        ips.add('::1')
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            ips.add(info[4][0])
+    except Exception:
+        pass
+    # IPv4 address per non-loopback interface (SIOCGIFADDR = 0x8915)
+    try:
+        for ifname in os.listdir('/sys/class/net'):
+            if ifname == 'lo':
+                continue
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                packed = struct.pack('256s', ifname.encode()[:15])
+                ip = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, packed)[20:24])
+                ips.add(ip)
+                s.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ips
+
+
+def _env_local_hosts() -> set:
+    """Hostnames/IPs explicitly declared as local via PTU_LOCAL_HOSTS.
+
+    Needed when the app runs inside a network namespace (Docker): the host's
+    real IP (e.g. 192.168.86.190) is not visible inside the container, whose
+    own IP is the bridge address instead. Set e.g. PTU_LOCAL_HOSTS=192.168.86.190
+    in docker-compose.yml.
+    """
+    raw = os.environ.get('PTU_LOCAL_HOSTS', '')
+    return {h.strip().lower() for h in raw.split(',') if h.strip()}
+
+
+def is_local_host(host) -> bool:
+    """Return True if the given host/IP refers to this machine.
+
+    Used to detect the container this app lives on (or its host) so that
+    patch commands can be executed locally instead of over SSH — SSH to
+    itself may not be available (no sshd / no keys), while local execution
+    always works.
+    """
+    if not host:
+        return False
+    h = str(host).strip().strip('[]').lower()
+    if not h:
+        return False
+    # Explicit declaration wins (e.g. the Docker host's IP, invisible from
+    # inside the container's network namespace)
+    if h in _env_local_hosts():
+        return True
+    if h == '0.0.0.0':
+        return True
+    try:
+        addr = ipaddress.ip_address(h)
+        if addr.is_loopback or addr.is_unspecified:
+            return True
+        return str(addr) in _get_local_ips()
+    except ValueError:
+        pass
+    if h == 'localhost':
+        return True
+    # Hostname: resolve and compare against this host's own addresses
+    try:
+        local_ips = _get_local_ips()
+        for info in socket.getaddrinfo(h, None):
+            if info[4][0] in local_ips:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 class PatchEngine:
@@ -174,6 +267,71 @@ class PatchEngine:
         except Exception:
             logger.warning(f"Could not clean up remote log from {host}")
 
+    def _execute_local_command(self, command, timeout=300, on_line=None):
+        """Execute a command on this host directly (no SSH).
+
+        Used when the target container is the one this app runs on — the
+        command is local, so run it with subprocess. Returns the same dict
+        contract as execute_ssh_command. Note: no '_remote_log' key is set,
+        so _flush_remote_log() becomes a no-op (there is nothing remote).
+        """
+        try:
+            if on_line is not None:
+                # Streaming path: run with a merged output pipe and forward
+                # each line to the live log as it arrives.
+                proc = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                chunks = []
+                for line in proc.stdout:
+                    chunks.append(line)
+                    try:
+                        on_line(line.rstrip('\r\n'))
+                    except Exception:
+                        pass
+                proc.wait(timeout=timeout)
+                output = ''.join(chunks)
+                return {
+                    'success': proc.returncode == 0,
+                    'exit_code': proc.returncode,
+                    'output': output,
+                    'error': '',
+                }
+            else:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                return {
+                    'success': completed.returncode == 0,
+                    'exit_code': completed.returncode,
+                    'output': completed.stdout,
+                    'error': completed.stderr,
+                }
+        except subprocess.TimeoutExpired:
+            logger.error(f"Local command timed out after {timeout}s: {command}")
+            return {
+                'success': False,
+                'exit_code': -1,
+                'output': '',
+                'error': f'Local command timed out after {timeout}s',
+            }
+        except Exception as e:
+            logger.error(f"Local command execution failed: {str(e)}")
+            return {
+                'success': False,
+                'exit_code': -1,
+                'output': '',
+                'error': str(e),
+            }
+
     def execute_ssh_command(self, host, port, user, command, timeout=300, private_key_path=None, on_line=None):
         """Execute a command via SSH and return its exit code.
 
@@ -192,6 +350,10 @@ class PatchEngine:
                 output (str): stdout from the command
                 error (str): stderr from the command
         """
+        # Local target (this app's own container/host): skip SSH entirely
+        if is_local_host(host):
+            logger.info(f"Target {host} is local — executing without SSH: {command}")
+            return self._execute_local_command(command, timeout=timeout, on_line=on_line)
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
