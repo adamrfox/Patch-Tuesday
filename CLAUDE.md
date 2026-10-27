@@ -7,7 +7,7 @@ This project implements a comprehensive patch management system designed specifi
 The system provides:
 - Container management for LXC containers via Proxmox API or manual configuration
 - Automated patch scheduling with maintenance windows
-- SSH-based patch execution using paramiko library
+- Patch execution using paramiko SSH — or locally (subprocess) when the target is the host the app itself runs on
 - Snapshot-based rollback capability (via Proxmox)
 - Alerting system via ntfy and SMTP
 - Web interface for monitoring and management
@@ -30,7 +30,7 @@ The system provides:
 - Apply patches via SSH to LXC containers
 - View update history and logs
 - Notification system (ntfy, SMTP)
-- Docker containerization for easy deployment
+- Native deployment via systemd (`deploy/patch-tuesday.service`), Docker as an alternative
 
 ## Technical Details
 
@@ -51,23 +51,34 @@ The system uses a modular approach with:
 ## Usage
 
 ### Running the Application
+Native (recommended — required when the app's own host is a patch target):
+1. `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+2. `.venv/bin/python -m app` — web UI on port 5000 + background scheduler
+3. For persistence, install `deploy/patch-tuesday.service`:
+   `sudo cp deploy/patch-tuesday.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now patch-tuesday`
+
+Docker (alternative — do NOT use it on a host that is itself a patch target,
+see the note in README):
 1. Build Docker image: `docker build -t patch-tuesday .`
 2. Run container: `docker run -p 5000:5000 patch-tuesday`
 
 ### Command Line Interface
 ```
-patch-tuesday list                    # List all containers
-patch-tuesday add "name" "id" [options]  # Add container
-patch-tuesday patch <id>              # Apply patches to container
-patch-tuesday patch-all               # Apply patches to all containers
+python -m app.cli list                    # List all containers
+python -m app.cli add "name" "id" [options]  # Add container
+python -m app.cli patch <id>              # Apply patches to container
+python -m app.cli patch-all               # Apply patches to all containers
 ```
 
 ## Deployment
 
-The system is designed to be containerized using Docker for easy deployment:
+The system runs natively as a systemd service (see `deploy/patch-tuesday.service`)
+on the host it manages. The running user needs passwordless `sudo` for local
+patch execution on that host; remote containers are patched over SSH.
+Docker remains available as an alternative deployment for hosts that are
+not themselves patch targets:
 - Uses Python 3.12 slim image
 - Exposes port 5000 for web interface
-- Runs as non-root user for security
 - All configuration stored in database
 
 ## Future Enhancements

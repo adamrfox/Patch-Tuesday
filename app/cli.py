@@ -223,15 +223,15 @@ def show_help():
 Patch Management CLI Tool
 
 Usage:
-  list                     - List all managed containers
-  add <name> <id> [options] - Add a new container
-  remove <id>             - Remove a container
-  update <id> [options]   - Update container configuration
-  patch <id>              - Apply patches to a container
-  patch-all               - Apply patches to all containers
-  proxmox-discover        - Discover containers from a Proxmox cluster
-  proxmox-import          - Import discovered containers into the database
-  help                    - Show this help
+  python -m app.cli list                     - List all managed containers
+  python -m app.cli add <name> <id> [options] - Add a new container
+  python -m app.cli remove <id>             - Remove a container
+  python -m app.cli update <id> [options]   - Update container configuration
+  python -m app.cli patch <id>              - Apply patches to a container
+  python -m app.cli patch-all               - Apply patches to all containers
+  python -m app.cli proxmox-discover        - Discover containers from a Proxmox cluster
+  python -m app.cli proxmox-import          - Import discovered containers into the database
+  python -m app.cli help                    - Show this help
 
 Options for 'add':
   --ssh-host HOST        - SSH host (default: None)
@@ -244,13 +244,13 @@ Options for 'update':
   --ssh-user USER        - SSH user
 
 Examples:
-  patch-tuesday list
-  patch-tuesday add "web-server" "100" --ssh-host "192.168.1.100"
-  patch-tuesday patch 1
-  patch-tuesday patch-all
-  patch-tuesday proxmox-discover --host "192.168.1.10"
-  patch-tuesday proxmox-import --all --host "192.168.1.10"
-  patch-tuesday proxmox-import --container 100 --container 205 --host "192.168.1.10"
+  python -m app.cli list
+  python -m app.cli add "web-server" "100" --ssh-host "192.168.1.100"
+  python -m app.cli patch 1
+  python -m app.cli patch-all
+  python -m app.cli proxmox-discover --host "192.168.1.10"
+  python -m app.cli proxmox-import --all --host "192.168.1.10"
+  python -m app.cli proxmox-import --container 100 --container 205 --host "192.168.1.10"
 """
     print(help_text)
 
@@ -261,6 +261,13 @@ def main():
         return
 
     command = sys.argv[1].lower()
+
+    # The CLI runs standalone (no web server), so push an application
+    # context ourselves — the database layer accesses Flask's
+    # `g` / `current_app`.
+    from . import create_app
+    app_ctx = create_app().app_context()
+    app_ctx.push()
 
     try:
         if command == 'list':
@@ -477,6 +484,8 @@ def main():
 
     except Exception as e:
         print(f"Error running command: {str(e)}")
+    finally:
+        app_ctx.pop()
 
 if __name__ == '__main__':
     main()

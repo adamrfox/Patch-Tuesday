@@ -1,5 +1,10 @@
 # Patch Management System Transfer Instructions
 
+> **Note:** this is a one-time record of the initial repository transfer.
+> Deployment and CLI details below are superseded — see `README.md` and
+> `CLAUDE.md` for the current setup (the app now runs natively via systemd,
+> and the CLI is invoked as `python -m app.cli ...`).
+
 ## Repository Setup
 
 You've created the repository at: https://github.com/adamrfox/Patch-Tuesday

@@ -11,7 +11,10 @@ services:
       - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     environment:
       - TZ=America/New_York
-      # This host's own IP (LXC 122 / "patch-tuesday") — not visible from
-      # inside the container's network namespace, so declare it explicitly.
-      # Patches for this entry run locally instead of over SSH.
-      - PTU_LOCAL_HOSTS=192.168.86.190
+      # Do NOT add PTU_LOCAL_HOSTS for the LXC this container lives on:
+      # "local" execution runs inside this container and would patch the
+      # container's own packages, not the LXC's. Leave that entry out of
+      # the list so it is patched over SSH instead — the app user's key
+      # must be in the LXC's ~/.ssh/authorized_keys for that to work.
+      # (PTU_LOCAL_HOSTS is for native deployments where hostname/IP
+      # auto-detection misses the host's address.)
