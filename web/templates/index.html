@@ -905,7 +905,7 @@
                         let html = '<table><thead><tr><th>Date</th><th>Status</th><th>Packages</th><th>Output</th></tr></thead><tbody>';
                         _historyRows.forEach(update => {
                             html += `<tr>
-                                <td>${esc(update.start_time)}</td>
+                                <td>${esc(localDate(update.start_time))}</td>
                                 <td class="status-${update.status}">${esc(update.status)}</td>
                                 <td>${esc(update.packages_updated || 'N/A')}</td>
                                 <td><button onclick="showOutput(${update.id})">View</button></td>
