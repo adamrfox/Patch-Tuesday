@@ -187,6 +187,69 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* Output viewer modal */
+        #outputModal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 1000;
+            padding: 5vh 5vw;
+            overflow: hidden;
+        }
+        #outputModal .modal-box {
+            background: #fff;
+            border-radius: 8px;
+            max-width: 900px;
+            margin: 0 auto;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }
+        #outputModal .modal-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        #outputModal .modal-header h3 {
+            margin: 0;
+            font-size: 1.05em;
+            color: #333;
+        }
+        #outputModal .modal-meta {
+            font-size: 0.8em;
+            color: #6c757d;
+            margin-top: 4px;
+        }
+        #outputModal .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.3em;
+            line-height: 1;
+            cursor: pointer;
+            color: #6c757d;
+            margin: 0;
+            padding: 0 6px;
+        }
+        #outputModal .modal-close:hover {
+            color: #333;
+        }
+        #outputModalContent {
+            flex: 1;
+            overflow: auto;
+            padding: 14px 18px;
+            white-space: pre-wrap;
+            font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+            font-size: 0.85em;
+            line-height: 1.45;
+            color: #212529;
+            background: #f8f9fa;
+            margin: 0;
+        }
     </style>
 </head>
 <body>
@@ -828,19 +891,24 @@
             if (tsEl) tsEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
         }
 
+        // Module-level cache of the currently loaded history rows so the
+        // View button can look up a row's full output/error without a refetch.
+        let _historyRows = [];
+
         function loadHistory() {
             const containerId = document.getElementById('historyContainerSelect').value;
             if (containerId) {
                 fetch(`/history/${containerId}`)
                     .then(response => response.json())
                     .then(data => {
+                        _historyRows = Array.isArray(data) ? data : [];
                         let html = '<table><thead><tr><th>Date</th><th>Status</th><th>Packages</th><th>Output</th></tr></thead><tbody>';
-                        data.forEach(update => {
+                        _historyRows.forEach(update => {
                             html += `<tr>
-                                <td>${update.start_time}</td>
-                                <td class="status-${update.status}">${update.status}</td>
-                                <td>${update.packages_updated || 'N/A'}</td>
-                                <td><button onclick="showOutput('${update.id}')">View</button></td>
+                                <td>${esc(update.start_time)}</td>
+                                <td class="status-${update.status}">${esc(update.status)}</td>
+                                <td>${esc(update.packages_updated || 'N/A')}</td>
+                                <td><button onclick="showOutput(${update.id})">View</button></td>
                             </tr>`;
                         });
                         html += '</tbody></table>';
@@ -848,16 +916,35 @@
                     })
                     .catch(error => {
                         console.error('Error:', error);
+                        _historyRows = [];
                         document.getElementById('historyContent').innerHTML = '<p>Error loading history</p>';
                     });
             } else {
+                _historyRows = [];
                 document.getElementById('historyContent').innerHTML = '';
             }
         }
 
         function showOutput(updateId) {
-            // Placeholder for showing output details
-            alert('Output viewing not implemented in this version');
+            const row = _historyRows.find(r => String(r.id) === String(updateId));
+            if (!row) {
+                alert('No output recorded for this run.');
+                return;
+            }
+            const title = document.getElementById('outputModalTitle');
+            const meta = document.getElementById('outputModalMeta');
+            const content = document.getElementById('outputModalContent');
+            title.textContent = `Update Output — ${row.status}`;
+            meta.textContent = `${row.start_time} → ${row.end_time || '…'}  ·  Packages: ${row.packages_updated || 'N/A'}`;
+            const body = (row.error_message ? `ERROR:\n${row.error_message}\n\n` : '') + (row.output || '');
+            content.textContent = body.trim() || '(no captured output)';
+            document.getElementById('outputModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeOutputModal() {
+            document.getElementById('outputModal').style.display = 'none';
+            document.body.style.overflow = '';
         }
 
         function toggleSchedule(scheduleId) {
@@ -1984,6 +2071,34 @@
         loadDiscoverySettings();
         loadDashboardStatus();
 
+        // Close the output viewer modal with the Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && document.getElementById('outputModal').style.display === 'block') {
+                closeOutputModal();
+            }
+        });
+
+        // Close the output viewer modal when the overlay (not the box) is clicked
+        document.getElementById('outputModal').addEventListener('click', function(e) {
+            if (!e.target.closest('.modal-box')) {
+                closeOutputModal();
+            }
+        });
+
     </script>
+
+    <!-- Output viewer modal (opened from the Update History tab's View button) -->
+    <div id="outputModal" role="dialog" aria-modal="true" aria-labelledby="outputModalTitle">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div>
+                    <h3 id="outputModalTitle">Update Output</h3>
+                    <div class="modal-meta" id="outputModalMeta"></div>
+                </div>
+                <button class="modal-close" onclick="closeOutputModal()" aria-label="Close" title="Close (Esc)">&times;</button>
+            </div>
+            <pre id="outputModalContent"></pre>
+        </div>
+    </div>
 </body>
 </html>
